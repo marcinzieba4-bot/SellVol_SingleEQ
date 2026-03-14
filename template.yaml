@@ -1,0 +1,56 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Transform: AWS::Serverless-2016-10-31
+
+Description: >
+  SellVol SingleEQ — Monthly sell-put signal generator for 50 SPX stocks.
+  Runs on the 1st of each month via EventBridge.
+
+Globals:
+  Function:
+    Timeout: 120          # yfinance can be slow for 50 tickers
+    MemorySize: 512
+    Runtime: python3.12
+    Environment:
+      Variables:
+        SIGNALS_BUCKET: !Ref SignalsBucket
+
+Resources:
+
+  # ---- S3 bucket to store monthly signal JSON files ----
+  SignalsBucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketName: !Sub "sellvol-signals-${AWS::AccountId}"
+      LifecycleConfiguration:
+        Rules:
+          - Id: expire-old-signals
+            Status: Enabled
+            ExpirationInDays: 1825   # keep 5 years
+
+  # ---- Lambda function ----
+  SellVolFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: SellVol-SingleEQ
+      CodeUri: .
+      Handler: lambda_function.lambda_handler
+      Description: "Monthly sell-put signal generator — 50 SPX stocks"
+      Policies:
+        - S3WritePolicy:
+            BucketName: !Ref SignalsBucket
+
+      # EventBridge trigger: 1st of every month at 06:00 UTC
+      Events:
+        MonthlyTrigger:
+          Type: Schedule
+          Properties:
+            Schedule: cron(0 6 1 * ? *)
+            Name: SellVol-MonthlyTrigger
+            Description: "Trigger signal generation on 1st of each month"
+            Enabled: true
+
+Outputs:
+  FunctionArn:
+    Value: !GetAtt SellVolFunction.Arn
+  SignalsBucketName:
+    Value: !Ref SignalsBucket
