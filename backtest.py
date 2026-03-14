@@ -37,11 +37,14 @@ For the remaining 41 stocks: use the fitted regression:
 1-month ATM premium:  premium = stock_IV / 100 × sqrt(1/(12×2π))
 """
 
+import os
 import yfinance as yf
 import pandas as pd
 import numpy as np
 import warnings
 warnings.filterwarnings("ignore")
+
+IV_HISTORY_FILE = "iv_history.csv"   # produced by fetch_iv_history.py
 
 # ------------------------------------------------------------------
 TICKERS = [
@@ -118,6 +121,42 @@ def vix_to_premium(vix: float, ticker: str) -> float:
     return (stock_iv_estimate(vix, ticker) / 100.0) * _BS_COEFF
 
 
+def load_iv_history() -> pd.DataFrame | None:
+    """
+    Load real per-stock IV history from AlphaQuery CSV (if available).
+    Returns a DataFrame indexed by (date, ticker) with column iv_30d,
+    resampled to month-start, or None if file not found.
+    """
+    if not os.path.exists(IV_HISTORY_FILE):
+        return None
+    df = pd.read_csv(IV_HISTORY_FILE, parse_dates=["date"])
+    df = df.set_index("date").groupby("ticker")["iv_30d"].resample("MS").mean()
+    df = df.reset_index().set_index(["date", "ticker"])["iv_30d"]
+    print(f"Loaded real IV history: {len(df):,} rows from {IV_HISTORY_FILE}")
+    return df
+
+
+def get_iv_for_month(iv_history: pd.DataFrame | None,
+                     ticker: str, month_start: pd.Timestamp,
+                     vix: float) -> float:
+    """
+    Return 30-day IV for ticker in a given month.
+    Priority:
+      1. Real AlphaQuery data (if iv_history loaded and has the observation)
+      2. Regression model: IV = VIX × (A + B×RV_ratio)
+    """
+    if iv_history is not None:
+        try:
+            iv = float(iv_history.loc[(month_start, ticker)])
+            if not np.isnan(iv):
+                return iv
+        except KeyError:
+            pass
+    # Fallback: regression model
+    rv = STOCK_RV_RATIOS.get(ticker, 1.9)
+    return vix * rv * get_calib(ticker) / 100   # return as fraction
+
+
 def fetch_vix_monthly() -> pd.Series:
     raw = yf.download("^VIX", start=START_DATE, end=END_DATE,
                       auto_adjust=False, progress=False)
@@ -139,7 +178,8 @@ def fetch_monthly(ticker: str) -> pd.DataFrame:
     ).dropna()
 
 
-def backtest_single(ticker: str, vix_ms: pd.Series) -> pd.DataFrame:
+def backtest_single(ticker: str, vix_ms: pd.Series,
+                    iv_history: pd.DataFrame | None = None) -> pd.DataFrame:
     df = fetch_monthly(ticker)
     if len(df) < 2:
         return pd.DataFrame()
@@ -162,7 +202,9 @@ def backtest_single(ticker: str, vix_ms: pd.Series) -> pd.DataFrame:
             else:
                 vix_val = float(vix_val)
 
-            premium = vix_to_premium(vix_val, ticker)
+            # Use real IV if available, else regression model
+            iv_frac = get_iv_for_month(iv_history, ticker, trade_month_start, vix_val)
+            premium = iv_frac * _BS_COEFF
             strike  = signal_close
 
             if expiry_close >= strike:
@@ -216,6 +258,10 @@ def current_month_estimate():
 
 
 def run_backtest() -> dict:
+    iv_history = load_iv_history()
+    using_real_iv = iv_history is not None
+    print(f"\nIV source: {'AlphaQuery real data (' + IV_HISTORY_FILE + ')' if using_real_iv else 'regression model (run fetch_iv_history.py to get real data)'}")
+
     print("Fetching VIX data ...")
     vix_ms = fetch_vix_monthly()
 
@@ -231,7 +277,7 @@ def run_backtest() -> dict:
     all_pnl = []
     for tkr in TICKERS:
         try:
-            result = backtest_single(tkr, vix_ms)
+            result = backtest_single(tkr, vix_ms, iv_history)
             if result.empty:
                 print(f"  {tkr:6s}  — no data, skipped")
                 continue
@@ -271,9 +317,10 @@ def run_backtest() -> dict:
     loss_months  = int((monthly_pnl < 0).sum())
     avg_vix      = float(avg_vix_monthly.mean())
 
+    iv_src = "AlphaQuery real IV" if using_real_iv else "regression model (VIX-calibrated)"
     print("\n" + "="*65)
     print("  PORTFOLIO AGGREGATE RESULTS")
-    print("  (user-calibrated premiums  +  regression for 41 uncalibrated stocks)")
+    print(f"  IV source: {iv_src}")
     print("="*65)
     print(f"  Period          : {monthly_pnl.index[0].date()} → {monthly_pnl.index[-1].date()}")
     print(f"  Months          : {n_months}")
