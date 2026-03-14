@@ -11,16 +11,14 @@ Premium model:
   1. IV estimate   = VIX × RV_ratio × IV_SCALE
        RV_ratio: per-stock realized vol / SPX realized vol (from 15yr history)
        IV_SCALE:  0.55 — aligns model IVs with observed single-stock option markets
-  2. BS fair value = IV / 100 × sqrt(1 / (12 × 2π))   [1-month ATM approximation]
-  3. Practical premium = BS fair value × markup(IV)
-       markup rises with IV: 1.30 at low vol → 1.50 at very high vol
-       reflects wider bid-ask + greater demand for downside protection
+  2. Premium = full Black-Scholes ATM put price using IV + 1-month T-bill rate
 
   If iv_history.csv is present (from fetch_iv_history.py / AlphaQuery),
-  real per-stock IV is used in step 1 instead of the VIX model.
+  real per-stock IV is used instead of the VIX model.
 """
 
 import os
+import math
 import yfinance as yf
 import pandas as pd
 import numpy as np
@@ -52,18 +50,7 @@ IV_SCALE = 0.55   # VIX → single-stock IV scaling factor
                   # (CBOE stock vol indices trade ~1.0-1.6x VIX depending on stock;
                   #  0.55 × RV_ratio gives realistic per-stock IVs across the universe)
 
-# Practical markup over BS theoretical fair value.
-# Accounts for: bid-ask spread, skew premium, demand for downside protection.
-# More volatile stocks have wider spreads → higher markup.
-def practical_markup(iv_pct: float) -> float:
-    if   iv_pct < 25:  return 1.30
-    elif iv_pct < 40:  return 1.35
-    elif iv_pct < 60:  return 1.40
-    else:              return 1.50
-
-# Black-Scholes 1-month ATM premium coefficient
-# premium/S ≈ IV × sqrt(T / (2π)),   T = 1/12
-_BS_COEFF = np.sqrt(1.0 / (12.0 * 2.0 * np.pi))   # ≈ 0.1151
+T_MONTHS = 1.0 / 12.0   # option tenor: 1 calendar month
 
 # Per-stock realized vol / SPX realized vol ratios (computed from 2010–2024 daily prices)
 STOCK_RV_RATIOS = {
@@ -80,20 +67,32 @@ STOCK_RV_RATIOS = {
 }
 
 
+def _norm_cdf(x: float) -> float:
+    return 0.5 * (1.0 + math.erf(x / math.sqrt(2.0)))
+
+
+def bs_put_premium(iv_pct: float, r_pct: float = 4.0) -> float:
+    """
+    Full Black-Scholes ATM put premium as a fraction of spot/strike.
+    ATM → S = K, so the formula simplifies to:
+        P/S = e^(-rT) N(-d2) - N(-d1)
+    where
+        d1 = (r/σ + σ/2) √T
+        d2 = d1 - σ √T
+    """
+    sigma = iv_pct / 100.0
+    r     = r_pct  / 100.0
+    sqrtT = math.sqrt(T_MONTHS)
+    d1    = (r / sigma + sigma / 2.0) * sqrtT
+    d2    = d1 - sigma * sqrtT
+    prem  = math.exp(-r * T_MONTHS) * _norm_cdf(-d2) - _norm_cdf(-d1)
+    return max(prem, 0.0)
+
+
 def iv_estimate(vix: float, ticker: str) -> float:
     """Annualised 30-day IV estimate (%) from VIX + per-stock RV ratio."""
     rv = STOCK_RV_RATIOS.get(ticker, np.mean(list(STOCK_RV_RATIOS.values())))
     return vix * rv * IV_SCALE
-
-
-def bs_fair_value(iv_pct: float) -> float:
-    """BS theoretical ATM put premium as fraction of notional."""
-    return (iv_pct / 100.0) * _BS_COEFF
-
-
-def practical_premium(iv_pct: float) -> float:
-    """What you'd actually collect: BS fair value × practical markup."""
-    return bs_fair_value(iv_pct) * practical_markup(iv_pct)
 
 
 # ------------------------------------------------------------------
@@ -128,6 +127,16 @@ def fetch_vix_monthly() -> pd.Series:
     return raw["Close"].resample("MS").first().dropna()
 
 
+def fetch_rfr_monthly() -> pd.Series:
+    """13-week T-bill annualised yield (%) resampled to month-start."""
+    raw = yf.download("^IRX", start=START_DATE, end=END_DATE,
+                      auto_adjust=False, progress=False)
+    if isinstance(raw.columns, pd.MultiIndex):
+        raw.columns = raw.columns.get_level_values(0)
+    s = raw["Close"].resample("MS").first().dropna()
+    return s  # already in % annualised (e.g. 5.25)
+
+
 def fetch_monthly(ticker: str) -> pd.DataFrame:
     raw = yf.download(ticker, start=START_DATE, end=END_DATE,
                       auto_adjust=True, progress=False)
@@ -141,7 +150,15 @@ def fetch_monthly(ticker: str) -> pd.DataFrame:
     ).dropna()
 
 
-def backtest_single(ticker: str, vix_ms: pd.Series,
+def _lookup(series: pd.Series, month_start: pd.Timestamp, default: float) -> float:
+    val = series.get(month_start, None)
+    if val is None or (isinstance(val, float) and math.isnan(val)):
+        idx = min(series.index.searchsorted(month_start), len(series) - 1)
+        val = float(series.iloc[idx])
+    return float(val)
+
+
+def backtest_single(ticker: str, vix_ms: pd.Series, rfr_ms: pd.Series,
                     iv_history=None) -> pd.DataFrame:
     df = fetch_monthly(ticker)
     if len(df) < 2:
@@ -158,15 +175,11 @@ def backtest_single(ticker: str, vix_ms: pd.Series,
         candle_up = signal_close > signal_open
 
         if candle_up:
-            vix_val = vix_ms.get(trade_month_start, None)
-            if vix_val is None:
-                idx = min(vix_ms.index.searchsorted(trade_month_start), len(vix_ms) - 1)
-                vix_val = float(vix_ms.iloc[idx])
-            else:
-                vix_val = float(vix_val)
+            vix_val = _lookup(vix_ms, trade_month_start, 20.0)
+            rfr_val = _lookup(rfr_ms, trade_month_start, 4.0)
 
             iv_pct  = get_iv_pct(iv_history, ticker, trade_month_start, vix_val)
-            prem    = practical_premium(iv_pct)
+            prem    = bs_put_premium(iv_pct, rfr_val)
             strike  = signal_close
 
             if expiry_close >= strike:
@@ -179,6 +192,7 @@ def backtest_single(ticker: str, vix_ms: pd.Series,
             trade = True
         else:
             vix_val = float("nan")
+            rfr_val = float("nan")
             iv_pct  = float("nan")
             prem    = 0.0
             pnl_pct = 0.0
@@ -187,68 +201,71 @@ def backtest_single(ticker: str, vix_ms: pd.Series,
 
         records.append({
             "date": expiry_date, "ticker": ticker, "trade": trade,
-            "outcome": outcome, "vix": vix_val, "iv_pct": iv_pct,
-            "premium": prem, "pnl_pct": pnl_pct,
+            "outcome": outcome, "vix": vix_val, "rfr": rfr_val,
+            "iv_pct": iv_pct, "premium": prem, "pnl_pct": pnl_pct,
         })
 
     return pd.DataFrame(records).set_index("date")
 
 
 def current_month_estimate():
-    raw = yf.download("^VIX", period="5d", auto_adjust=False, progress=False)
-    if isinstance(raw.columns, pd.MultiIndex):
-        raw.columns = raw.columns.get_level_values(0)
-    vix = float(raw["Close"].iloc[-1])
+    raw_vix = yf.download("^VIX", period="5d", auto_adjust=False, progress=False)
+    raw_rfr = yf.download("^IRX", period="5d", auto_adjust=False, progress=False)
+    if isinstance(raw_vix.columns, pd.MultiIndex):
+        raw_vix.columns = raw_vix.columns.get_level_values(0)
+    if isinstance(raw_rfr.columns, pd.MultiIndex):
+        raw_rfr.columns = raw_rfr.columns.get_level_values(0)
+    vix = float(raw_vix["Close"].iloc[-1])
+    rfr = float(raw_rfr["Close"].iloc[-1]) if not raw_rfr.empty else 4.0
 
-    print("\n" + "="*70)
-    print(f"  CURRENT MONTH ESTIMATES  (VIX={vix:.2f})")
-    print(f"  IV = VIX × RV_ratio × {IV_SCALE}  |  premium = BS_fair × markup(IV)")
-    print("="*70)
-    print(f"  {'Ticker':6s}  {'RV ratio':>8s}  {'IV est':>7s}  {'BS fair':>8s}  {'Markup':>7s}  {'Practical':>10s}")
-    print("  " + "-"*58)
+    print("\n" + "="*68)
+    print(f"  CURRENT MONTH ESTIMATES  (VIX={vix:.2f}, r={rfr:.2f}%)")
+    print(f"  IV = VIX × RV_ratio × {IV_SCALE}  |  premium = full Black-Scholes ATM put")
+    print("="*68)
+    print(f"  {'Ticker':6s}  {'RV ratio':>8s}  {'IV est':>7s}  {'BS put':>8s}")
+    print("  " + "-"*40)
+    prems = []
     for tkr in TICKERS:
         iv   = iv_estimate(vix, tkr)
-        bsfv = bs_fair_value(iv) * 100
-        mu   = practical_markup(iv)
-        prac = practical_premium(iv) * 100
+        prem = bs_put_premium(iv, rfr) * 100
         rv   = STOCK_RV_RATIOS.get(tkr, 0)
-        print(f"  {tkr:6s}  {rv:>8.2f}x  {iv:>6.1f}%  {bsfv:>7.2f}%  {mu:>7.2f}x  {prac:>9.2f}%")
-    avg_prac = np.mean([practical_premium(iv_estimate(vix, t))*100 for t in TICKERS])
-    avg_bsfv = np.mean([bs_fair_value(iv_estimate(vix, t))*100 for t in TICKERS])
-    print("  " + "-"*58)
-    print(f"  {'AVG':6s}  {'':>8s}  {'':>7s}  {avg_bsfv:>7.2f}%  {'':>7s}  {avg_prac:>9.2f}%")
-    print("="*70)
+        prems.append(prem)
+        print(f"  {tkr:6s}  {rv:>8.2f}x  {iv:>6.1f}%  {prem:>7.2f}%")
+    print("  " + "-"*40)
+    print(f"  {'AVG':6s}  {'':>8s}  {'':>7s}  {np.mean(prems):>7.2f}%")
+    print("="*68)
 
-    print(f"\n  VIX-to-premium table (avg portfolio):")
-    print(f"  {'VIX':>5s}  {'Avg IV':>8s}  {'BS fair':>8s}  {'Practical':>10s}")
+    print(f"\n  VIX-to-BS-premium table (avg portfolio, r={rfr:.1f}%):")
+    print(f"  {'VIX':>5s}  {'Avg IV':>8s}  {'BS put':>8s}")
     for v in [12, 15, 18, 20, 25, 30, 35, 40]:
-        ivs  = [iv_estimate(v, t) for t in TICKERS]
+        ivs = [iv_estimate(v, t) for t in TICKERS]
         avg_iv   = np.mean(ivs)
-        avg_bs   = np.mean([bs_fair_value(iv)*100 for iv in ivs])
-        avg_pr   = np.mean([practical_premium(iv)*100 for iv in ivs])
-        print(f"  {v:>5d}  {avg_iv:>7.1f}%  {avg_bs:>7.2f}%  {avg_pr:>9.2f}%")
+        avg_bs   = np.mean([bs_put_premium(iv, rfr)*100 for iv in ivs])
+        print(f"  {v:>5d}  {avg_iv:>7.1f}%  {avg_bs:>7.2f}%")
 
-    return vix
+    return vix, rfr
 
 
 def run_backtest() -> dict:
     iv_history   = load_iv_history()
     using_real_iv = iv_history is not None
 
-    print("Fetching VIX ...")
+    print("Fetching VIX and risk-free rate ...")
     vix_ms = fetch_vix_monthly()
+    rfr_ms = fetch_rfr_monthly()
     print(f"Running backtest [{START_DATE} → {END_DATE}]  "
-          f"IV source: {'AlphaQuery CSV' if using_real_iv else f'VIX × RV × {IV_SCALE} × markup'}\n")
+          f"IV source: {'AlphaQuery CSV' if using_real_iv else f'VIX × RV × {IV_SCALE}'}  "
+          f"premium: full Black-Scholes\n")
 
     all_pnl = []
     for tkr in TICKERS:
         try:
-            result = backtest_single(tkr, vix_ms, iv_history)
+            result = backtest_single(tkr, vix_ms, rfr_ms, iv_history)
             if result.empty:
                 print(f"  {tkr:6s}  — skipped")
                 continue
             result["weighted_pnl"] = result["pnl_pct"] * WEIGHT
-            all_pnl.append(result[["weighted_pnl", "vix", "iv_pct", "premium"]])
+            all_pnl.append(result[["weighted_pnl", "vix", "rfr", "iv_pct", "premium"]])
 
             trades   = int(result["trade"].sum())
             wins     = int((result["outcome"] == "expired").sum())
@@ -285,14 +302,15 @@ def run_backtest() -> dict:
 
     print("\n" + "="*60)
     print("  PORTFOLIO AGGREGATE RESULTS")
-    print(f"  IV model: VIX × RV_ratio × {IV_SCALE}  |  markup: {practical_markup.__doc__ or '1.30–1.50×'}")
+    print(f"  IV model: VIX × RV_ratio × {IV_SCALE}  |  premium: full Black-Scholes")
     print("="*60)
     print(f"  Period          : {monthly_pnl.index[0].date()} → {monthly_pnl.index[-1].date()}")
     print(f"  Months          : {n_months}")
     print(f"  Avg VIX         : {avg_vix:.1f}")
     print(f"  Avg IV (traded) : {avg_iv_pct:.1f}%")
-    print(f"  Avg BS fair val : {avg_iv_pct * _BS_COEFF:.2f}%")
-    print(f"  Avg prac premium: {avg_prem_pct:.2f}%  (= BS × markup)")
+    print(f"  Avg BS premium  : {avg_prem_pct:.2f}%")
+    avg_rfr = combined.loc[combined["premium"] > 0, "rfr"].mean() if "rfr" in combined.columns else float("nan")
+    print(f"  Avg risk-free   : {avg_rfr:.2f}%")
     print(f"  Total Return    : {total_return*100:+.2f}%")
     print(f"  Ann. Return     : {ann_return*100:+.2f}%")
     print(f"  Ann. Volatility : {ann_vol*100:.2f}%")
@@ -325,6 +343,7 @@ def run_backtest() -> dict:
 if __name__ == "__main__":
     current_month_estimate()
     results = run_backtest()
+
 
     if results:
         results["equity_curve"].to_csv("equity_curve.csv")
