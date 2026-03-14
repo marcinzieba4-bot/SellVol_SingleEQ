@@ -7,53 +7,34 @@ Rule:
   - Each stock has equal notional weight = 1/50 of portfolio
 
 =============================================================
-PREMIUM MODEL  (VIX-based, per-stock, research-calibrated)
+PREMIUM MODEL  (user-calibrated, per-stock)
 =============================================================
 
-Data we have:
-  • VIX history from ^VIX (yfinance, available from 1990)
-  • Daily price history for all 50 stocks (used to compute realized vol)
-  • Current CBOE single-stock vol indices: VXAPL, VXAZN, VXGS, VXGOG
+Observed real market premiums at VIX=27.19 (user-provided, March 2026):
+  AAPL 3.10%  MSFT 2.90%  NVDA 4.80%  GOOGL 3.70%  AMZN 3.75%
+  GS   4.10%  JPM  3.75%  META 3.60%  JNJ   2.70%
 
-Data we don't have:
-  • Full historical single-stock implied volatility time-series
+These imply per-stock true_calib = premium / (VIX × RV_ratio × BS_COEFF):
+  AAPL=0.500  MSFT=0.523  NVDA=0.473  GOOGL=0.615  AMZN=0.512
+  GS=0.672    JPM=0.665   META=0.412  JNJ=0.743
 
-How we approximate historical single-stock IV:
+Key finding: IV/VIX = 0.608 + 0.257 × RV_ratio  (R²=0.59, 9 data points)
+  → High-RV stocks (NVDA 3.24x, META 2.79x) don't scale proportionally in IV.
+  → There's a base "floor" (~0.61 × VIX) that all stocks share regardless of beta.
+  → Avg calibration factor: 0.568 (well below our previous 0.75 assumption).
 
-  Step 1 — Per-stock realized vol multiplier (from 15yr price history):
-      RV_ratio[stock] = mean( stock_21d_RV / SPX_21d_RV )  over 2010-2024
-      Range: AMD 4.27x (high-beta tech) ... KO 1.15x (defensive)
-      Portfolio average: 1.90x
+Why IV/VIX < RV_ratio (and hence calib < 1):
+  (Carr & Wu 2009, Driessen et al. 2005)
+  VIX embeds a CORRELATION RISK PREMIUM — implied correlation (39.5%) exceeds
+  realized correlation (32.5%) by ~7 pts.  This inflates VIX relative to single
+  stocks, which are fairly priced (VRP ≈ 0).
 
-  Step 2 — Calibration factor from CBOE stock vol indices (real market data):
-      VXAPL = 32.99%,  VXAZN = 38.16%,  VXGS = 44.31%,  VXGOG = 34.22%
-      (downloaded live, VIX = 27.19 at same point)
-      Calibration factor = mean( CBOE_IV / (VIX × RV_ratio) )
-                         = mean( 0.613, 0.600, 0.836, 0.655 ) = 0.676
+For the 9 calibrated stocks: use exact user-observed calibration.
+For the remaining 41 stocks: use the fitted regression:
+  IV/VIX = 0.6083 + 0.2571 × RV_ratio
+  → calib[stock] = (0.6083 + 0.2571 × RV_ratio) / RV_ratio
 
-  Why calibration < 1?  (Carr & Wu 2009 + Driessen et al. 2005)
-      VIX already includes a CORRELATION RISK PREMIUM — index options are
-      overpriced relative to constituent single-stock options.  The implied
-      correlation (≈39.5%) exceeds realized correlation (≈32.5%) by ~7 pts,
-      creating a "dispersion premium" that inflates VIX above what a simple
-      vol-of-stocks model would give.  Single-stock IV ≈ RV (fairly priced);
-      index IV >> RV (expensive for buyers → profitable for sellers).
-
-  Note on VIX regime: calibration factors tend to COMPRESS when VIX is
-  elevated (correlations spike → index vol rises faster than single stocks).
-  Our 0.676 was measured at VIX=27 (stressed market).  We use 0.75 as a
-  long-run average, splitting the difference between stressed (~0.68) and
-  calm markets (~0.85+).
-
-  Final formula:
-      stock_IV  = VIX × RV_ratio[stock] × 0.75
-      premium   = stock_IV / 100 × sqrt( 1 / (12 × 2π) )   [BS ATM approx]
-
-  Calibration check at VIX=27.19:
-      AAPL:  model=32.3%, CBOE=33.0% ✓
-      AMZN:  model=44.9%, CBOE=38.2%  (+17%, AMZN RV ratio high)
-      GS:    model=37.4%, CBOE=44.3%  (-16%, GS has elevated skew premium)
-      GOOG:  model=36.8%, CBOE=34.2% ✓
+1-month ATM premium:  premium = stock_IV / 100 × sqrt(1/(12×2π))
 """
 
 import yfinance as yf
@@ -80,17 +61,11 @@ START_DATE = "2010-01-01"
 END_DATE   = "2024-12-31"
 WEIGHT     = 1.0 / len(TICKERS)
 
-# Calibration factor: derived from CBOE stock vol indices vs VIX
-# Measured at VIX=27.19: 0.676 (stressed → correlations elevated)
-# Long-run estimate: 0.75 (accounts for calmer markets when ratio expands)
-CALIB_FACTOR = 0.75
-
-# Black-Scholes ATM premium approximation for 1-month expiry
-# premium/S ≈ IV × sqrt(T / 2π)  where T = 1/12 year
+# Black-Scholes ATM premium coefficient for 1-month expiry
+# premium/S = IV × sqrt(T/(2π)),  T=1/12
 _BS_COEFF = np.sqrt(1.0 / (12.0 * 2.0 * np.pi))   # ≈ 0.1151
 
-# Per-stock RV/SPX-RV ratios — computed from 2010-2024 daily price history.
-# Stable structural features: beta, sector, idiosyncratic risk.
+# Per-stock realized vol / SPX realized vol ratios (from 15yr price history)
 STOCK_RV_RATIOS = {
     "AAPL": 1.98, "MSFT": 1.77, "NVDA": 3.24, "GOOGL": 1.92, "META": 2.79,
     "AMZN": 2.34, "AVGO": 2.66, "AMD":  4.27, "INTC":  2.20, "CRM":  2.54,
@@ -103,22 +78,47 @@ STOCK_RV_RATIOS = {
     "XOM":  1.61, "CVX":  1.68, "CAT":  2.06, "GE":    2.09, "HON":  1.47,
     "LMT":  1.42, "UPS":  1.60, "BA":   2.16, "RTX":   1.55, "NEE":  1.47,
 }
-_AVG_RATIO = np.mean(list(STOCK_RV_RATIOS.values()))   # ≈ 1.90x
+
+# User-observed premiums at VIX=27.19 → per-stock true calibration factors
+# true_calib = observed_premium / (VIX × RV_ratio × BS_COEFF / 100)
+_USER_CALIB_VIX = 27.19
+_USER_OBSERVED = {   # raw observed premium fractions
+    "AAPL": 0.031, "MSFT": 0.029, "NVDA": 0.048, "GOOGL": 0.037,
+    "AMZN": 0.0375,"GS":   0.041, "JPM":  0.0375,"META":  0.036, "JNJ": 0.027,
+}
+_USER_CALIBS = {
+    tkr: prem / (_USER_CALIB_VIX * STOCK_RV_RATIOS[tkr] * _BS_COEFF / 100)
+    for tkr, prem in _USER_OBSERVED.items()
+}
+
+# Regression for non-calibrated stocks: IV/VIX = A + B × RV_ratio
+# Fitted from the 9 user-calibrated stocks (R²=0.59)
+_REG_A = 0.6083
+_REG_B = 0.2571
+_AVG_CALIB = np.mean(list(_USER_CALIBS.values()))   # ≈ 0.568
+
+
+def get_calib(ticker: str) -> float:
+    """
+    Return per-stock calibration factor.
+    Known stocks: exact user-observed value.
+    Others: fitted from IV/VIX = A + B × RV_ratio regression.
+    """
+    if ticker in _USER_CALIBS:
+        return _USER_CALIBS[ticker]
+    rv = STOCK_RV_RATIOS.get(ticker, np.mean(list(STOCK_RV_RATIOS.values())))
+    return (_REG_A + _REG_B * rv) / rv
 
 
 def stock_iv_estimate(vix: float, ticker: str) -> float:
-    """Annualised 30-day IV estimate for a single stock given VIX."""
-    ratio = STOCK_RV_RATIOS.get(ticker, _AVG_RATIO)
-    return vix * ratio * CALIB_FACTOR
+    return vix * STOCK_RV_RATIOS.get(ticker, 1.9) * get_calib(ticker)
 
 
 def vix_to_premium(vix: float, ticker: str) -> float:
-    """1-month ATM put premium as fraction of notional."""
     return (stock_iv_estimate(vix, ticker) / 100.0) * _BS_COEFF
 
 
 def fetch_vix_monthly() -> pd.Series:
-    """VIX closing level on the first trading day of each month."""
     raw = yf.download("^VIX", start=START_DATE, end=END_DATE,
                       auto_adjust=False, progress=False)
     if isinstance(raw.columns, pd.MultiIndex):
@@ -127,7 +127,6 @@ def fetch_vix_monthly() -> pd.Series:
 
 
 def fetch_monthly(ticker: str) -> pd.DataFrame:
-    """Daily prices resampled to monthly open/close."""
     raw = yf.download(ticker, start=START_DATE, end=END_DATE,
                       auto_adjust=True, progress=False)
     if raw.empty:
@@ -182,59 +181,37 @@ def backtest_single(ticker: str, vix_ms: pd.Series) -> pd.DataFrame:
             trade   = False
 
         records.append({
-            "date":    expiry_date,
-            "ticker":  ticker,
-            "trade":   trade,
-            "outcome": outcome,
-            "vix":     vix_val,
-            "premium": premium,
-            "pnl_pct": pnl_pct,
+            "date": expiry_date, "ticker": ticker, "trade": trade,
+            "outcome": outcome, "vix": vix_val, "premium": premium, "pnl_pct": pnl_pct,
         })
 
     return pd.DataFrame(records).set_index("date")
 
 
 def current_month_estimate():
-    """Print current-month per-stock premium estimates using live VIX."""
     raw = yf.download("^VIX", period="5d", auto_adjust=False, progress=False)
     if isinstance(raw.columns, pd.MultiIndex):
         raw.columns = raw.columns.get_level_values(0)
     latest_vix = float(raw["Close"].iloc[-1])
 
-    # Try to pull live CBOE single-stock vol for the 5 available tickers
-    cboe_map = {"AAPL": "^VXAPL", "AMZN": "^VXAZN", "GS": "^VXGS", "GOOGL": "^VXGOG"}
-    cboe_live = {}
-    for stock, tkr in cboe_map.items():
-        try:
-            d = yf.download(tkr, period="5d", progress=False)
-            if isinstance(d.columns, pd.MultiIndex): d.columns = d.columns.get_level_values(0)
-            if not d.empty:
-                cboe_live[stock] = float(d["Close"].iloc[-1])
-        except Exception:
-            pass
-
-    print("\n" + "="*65)
+    print("\n" + "="*72)
     print(f"  CURRENT MONTH PREMIUM ESTIMATES  (VIX={latest_vix:.2f})")
-    print(f"  Model: stock_IV = VIX × RV_ratio × {CALIB_FACTOR}")
-    print("="*65)
-    print(f"  {'Ticker':6s}  {'RV ratio':>8s}  {'Model IV':>9s}  {'Premium':>8s}", end="")
-    if cboe_live:
-        print(f"  {'CBOE IV':>8s}", end="")
-    print()
-    print("  " + "-"*50)
+    print(f"  Model: IV/VIX = {_REG_A:.4f} + {_REG_B:.4f}×RV_ratio  (user-calibrated for 9 stocks)")
+    print("="*72)
+    print(f"  {'Ticker':6s}  {'Calib':>7s}  {'Est IV':>7s}  {'Est prem':>9s}  {'Observed':>9s}  {'Source':>10s}")
+    print("  " + "-"*60)
     for tkr in TICKERS:
-        iv   = stock_iv_estimate(latest_vix, tkr)
-        prem = vix_to_premium(latest_vix, tkr) * 100
-        ratio = STOCK_RV_RATIOS.get(tkr, _AVG_RATIO)
-        line = f"  {tkr:6s}  {ratio:>8.2f}x  {iv:>8.1f}%  {prem:>7.2f}%"
-        if tkr in cboe_live:
-            line += f"  {cboe_live[tkr]:>7.1f}% ← live CBOE"
-        print(line)
-    avg_iv   = latest_vix * _AVG_RATIO * CALIB_FACTOR
-    avg_prem = (avg_iv / 100) * _BS_COEFF * 100
-    print("  " + "-"*50)
-    print(f"  {'AVG':6s}  {_AVG_RATIO:>8.2f}x  {avg_iv:>8.1f}%  {avg_prem:>7.2f}%")
-    print("="*65)
+        calib  = get_calib(tkr)
+        iv     = stock_iv_estimate(latest_vix, tkr)
+        prem   = vix_to_premium(latest_vix, tkr) * 100
+        obs    = _USER_OBSERVED.get(tkr)
+        source = "user obs" if tkr in _USER_CALIBS else "regression"
+        obs_str = f"{obs*100:>8.2f}%" if obs else "        -"
+        print(f"  {tkr:6s}  {calib:>7.4f}  {iv:>6.1f}%  {prem:>8.2f}%  {obs_str}  {source:>10s}")
+    avg_prem = np.mean([vix_to_premium(latest_vix, t)*100 for t in TICKERS])
+    print("  " + "-"*60)
+    print(f"  {'AVG':6s}  {'':>7s}  {'':>7s}  {avg_prem:>8.2f}%")
+    print("="*72)
     return latest_vix
 
 
@@ -242,13 +219,12 @@ def run_backtest() -> dict:
     print("Fetching VIX data ...")
     vix_ms = fetch_vix_monthly()
 
-    print(f"\nVIX → avg single-stock IV and 1-month ATM put premium")
-    print(f"  (model: stock_IV = VIX × {_AVG_RATIO:.2f} × {CALIB_FACTOR})")
-    print(f"  {'VIX':>5s}  {'Avg stock IV':>13s}  {'Avg premium':>12s}")
-    for v in [12, 15, 18, 20, 25, 30, 35, 40, 50]:
-        avg_iv   = v * _AVG_RATIO * CALIB_FACTOR
-        avg_prem = (avg_iv / 100) * _BS_COEFF * 100
-        print(f"  {v:>5d}  {avg_iv:>12.1f}%  {avg_prem:>11.2f}%")
+    print(f"\nAvg premium at various VIX levels (avg calib={_AVG_CALIB:.3f}):")
+    avg_rv = np.mean(list(STOCK_RV_RATIOS.values()))
+    for v in [12, 15, 18, 20, 25, 30, 35, 40]:
+        avg_iv   = np.mean([stock_iv_estimate(v, t) for t in TICKERS])
+        avg_prem = np.mean([vix_to_premium(v, t)*100 for t in TICKERS])
+        print(f"  VIX={v:2d}  avg_IV={avg_iv:.1f}%  avg_premium={avg_prem:.2f}%")
 
     print(f"\nRunning backtest on {len(TICKERS)} tickers  [{START_DATE} → {END_DATE}]\n")
 
@@ -297,12 +273,11 @@ def run_backtest() -> dict:
 
     print("\n" + "="*65)
     print("  PORTFOLIO AGGREGATE RESULTS")
-    print(f"  (CBOE-calibrated model: VIX × RV_ratio × {CALIB_FACTOR})")
+    print("  (user-calibrated premiums  +  regression for 41 uncalibrated stocks)")
     print("="*65)
     print(f"  Period          : {monthly_pnl.index[0].date()} → {monthly_pnl.index[-1].date()}")
     print(f"  Months          : {n_months}")
     print(f"  Avg VIX         : {avg_vix:.1f}")
-    print(f"  Avg stock IV    : {avg_vix * _AVG_RATIO * CALIB_FACTOR:.1f}%")
     print(f"  Avg Premium     : {avg_prem_pct:.2f}%")
     print(f"  Total Return    : {total_return*100:+.2f}%")
     print(f"  Ann. Return     : {ann_return*100:+.2f}%")
