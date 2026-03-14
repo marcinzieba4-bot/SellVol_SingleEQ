@@ -28,7 +28,7 @@ TICKERS = [
     "XOM", "CVX", "CAT", "GE", "HON", "LMT", "UPS", "BA", "RTX", "NEE",
 ]
 
-PREMIUM_PCT = 4.0   # % of notional collected as premium
+PREMIUM_PCT = 3.3   # % of notional collected as premium
 S3_BUCKET   = os.environ.get("SIGNALS_BUCKET", "sellvol-signals")
 WEIGHT_PCT  = round(100.0 / len(TICKERS), 2)   # equal weight %
 # ------------------------------------------------------------------

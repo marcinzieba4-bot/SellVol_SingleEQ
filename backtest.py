@@ -32,7 +32,7 @@ TICKERS = [
     "XOM", "CVX", "CAT", "GE", "HON", "LMT", "UPS", "BA", "RTX", "NEE",
 ]
 
-PREMIUM_PCT = 0.04   # 4% premium received when selling put
+PREMIUM_PCT = 0.033  # 3.3% premium received when selling put
 START_DATE  = "2010-01-01"
 END_DATE    = "2024-12-31"
 WEIGHT      = 1.0 / len(TICKERS)   # equal weight per stock
