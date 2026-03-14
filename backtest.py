@@ -1,11 +1,12 @@
 """
 Sell-Put Monthly Backtest — 50 large SPX stocks
 Rule:
-  - If last monthly candle CLOSED UP  → sell ATM put next month (collect 4% premium)
+  - If last monthly candle CLOSED UP  → sell ATM put next month
   - If last monthly candle CLOSED DOWN → do nothing
-  - Put expires worthless if stock closes ABOVE strike at expiry
-  - Put is assigned (loss) if stock closes BELOW strike
-    loss = (strike - expiry_close) / strike  — net P&L = premium - loss
+  - Premium is derived from VIX at the START of the trade month via
+    the Black-Scholes ATM approximation:
+        premium_pct = VIX/100 * sqrt(1/12) / sqrt(2*pi)
+    e.g. VIX=20 → ~2.3%   VIX=30 → ~3.5%   VIX=40 → ~4.6%
   - Strike = previous month close (ATM put)
   - Each stock has equal notional weight = 1/50 of portfolio
 """
@@ -16,8 +17,6 @@ import numpy as np
 import warnings
 warnings.filterwarnings("ignore")
 
-# ------------------------------------------------------------------
-# 50 large-cap SPX stocks (diversified across sectors)
 # ------------------------------------------------------------------
 TICKERS = [
     # Tech
@@ -32,10 +31,35 @@ TICKERS = [
     "XOM", "CVX", "CAT", "GE", "HON", "LMT", "UPS", "BA", "RTX", "NEE",
 ]
 
-PREMIUM_PCT = 0.033  # 3.3% premium received when selling put
-START_DATE  = "2010-01-01"
-END_DATE    = "2024-12-31"
-WEIGHT      = 1.0 / len(TICKERS)   # equal weight per stock
+START_DATE = "2010-01-01"
+END_DATE   = "2024-12-31"
+WEIGHT     = 1.0 / len(TICKERS)
+
+# Black-Scholes ATM put approximation coefficient for 1-month expiry
+# premium/S = IV * sqrt(T / (2*pi))  where T = 1/12
+_BS_ATM_COEFF = np.sqrt(1 / (12 * 2 * np.pi))   # ≈ 0.1151
+
+
+def vix_to_premium(vix: float) -> float:
+    """Convert annualised VIX (e.g. 20.0) to 1-month ATM put premium fraction."""
+    return (vix / 100.0) * _BS_ATM_COEFF
+
+
+def fetch_vix_monthly() -> pd.Series:
+    """
+    Download ^VIX daily and return a Series of month-start VIX values.
+    Index = month-start date (first trading day of each month).
+    We use the VIX on the FIRST day of the trade month as the premium estimate,
+    because that's when you'd actually be selling the put.
+    """
+    raw = yf.download("^VIX", start=START_DATE, end=END_DATE,
+                      auto_adjust=False, progress=False)
+    if isinstance(raw.columns, pd.MultiIndex):
+        raw.columns = raw.columns.get_level_values(0)
+
+    # Take month-start (first trading day of each month) closing VIX
+    vix_monthly = raw["Close"].resample("MS").first().dropna()
+    return vix_monthly
 
 
 def fetch_monthly(ticker: str) -> pd.DataFrame:
@@ -44,28 +68,19 @@ def fetch_monthly(ticker: str) -> pd.DataFrame:
                       auto_adjust=True, progress=False)
     if raw.empty:
         return pd.DataFrame()
-
-    # yfinance ≥1.0 returns a MultiIndex; flatten to single ticker
     if isinstance(raw.columns, pd.MultiIndex):
         raw.columns = raw.columns.get_level_values(0)
-
-    df = raw[["Open", "High", "Low", "Close"]].copy()
-
-    # Resample to month-end
-    monthly = df.resample("ME").agg(
-        Open=("Open", "first"),
-        High=("High", "max"),
-        Low=("Low", "min"),
+    monthly = raw[["Open", "Close"]].resample("ME").agg(
+        Open=("Open",  "first"),
         Close=("Close", "last"),
     ).dropna()
-
     return monthly
 
 
-def backtest_single(ticker: str) -> pd.DataFrame:
+def backtest_single(ticker: str, vix_ms: pd.Series) -> pd.DataFrame:
     """
     Returns monthly P&L (% of notional) for one ticker.
-    Index = expiry month (the month AFTER the signal candle).
+    Index = expiry month-end (the month AFTER the signal candle).
     """
     df = fetch_monthly(ticker)
     if len(df) < 2:
@@ -76,13 +91,24 @@ def backtest_single(ticker: str) -> pd.DataFrame:
         signal_open   = float(df["Open"].iloc[i])
         signal_close  = float(df["Close"].iloc[i])
         expiry_close  = float(df["Close"].iloc[i + 1])
-        expiry_date   = df.index[i + 1]
+        expiry_date   = df.index[i + 1]          # month-end of trade month
+        trade_month_start = expiry_date.replace(day=1)  # first of trade month
 
         candle_up = signal_close > signal_open
 
         if candle_up:
+            # Look up VIX on first trading day of the trade month
+            vix_val = vix_ms.get(trade_month_start, None)
+            if vix_val is None:
+                # fallback: nearest available VIX
+                idx = vix_ms.index.searchsorted(trade_month_start)
+                idx = min(idx, len(vix_ms) - 1)
+                vix_val = float(vix_ms.iloc[idx])
+            else:
+                vix_val = float(vix_val)
+
+            premium  = vix_to_premium(vix_val)
             strike   = signal_close
-            premium  = PREMIUM_PCT
 
             if expiry_close >= strike:
                 pnl_pct = premium
@@ -94,6 +120,8 @@ def backtest_single(ticker: str) -> pd.DataFrame:
             trade = True
         else:
             pnl_pct = 0.0
+            vix_val = float("nan")
+            premium = 0.0
             outcome = "no_trade"
             trade   = False
 
@@ -102,33 +130,63 @@ def backtest_single(ticker: str) -> pd.DataFrame:
             "ticker":  ticker,
             "trade":   trade,
             "outcome": outcome,
+            "vix":     vix_val,
+            "premium": premium,
             "pnl_pct": pnl_pct,
         })
 
     return pd.DataFrame(records).set_index("date")
 
 
+def current_month_estimate():
+    """Print VIX-based premium estimate for the current month."""
+    raw = yf.download("^VIX", period="5d", auto_adjust=False, progress=False)
+    if isinstance(raw.columns, pd.MultiIndex):
+        raw.columns = raw.columns.get_level_values(0)
+    latest_vix = float(raw["Close"].iloc[-1])
+    premium    = vix_to_premium(latest_vix)
+    print("\n" + "="*45)
+    print("  CURRENT MONTH PREMIUM ESTIMATE")
+    print("="*45)
+    print(f"  Latest VIX     : {latest_vix:.2f}")
+    print(f"  Formula        : VIX/100 * sqrt(1/(12*2π))")
+    print(f"  ATM Put Premium: {premium*100:.2f}%")
+    print("="*45)
+    return latest_vix, premium
+
+
 def run_backtest() -> dict:
-    print(f"Running backtest on {len(TICKERS)} tickers  [{START_DATE} → {END_DATE}]")
-    print(f"Rule: sell ATM put when monthly candle is UP  |  premium = {PREMIUM_PCT*100:.0f}%\n")
+    print("Fetching VIX data ...")
+    vix_ms = fetch_vix_monthly()
+
+    # Show VIX premium table
+    print(f"\nVIX → 1-month ATM put premium (BS approximation):")
+    for v in [12, 15, 18, 20, 25, 30, 35, 40, 50, 60]:
+        print(f"  VIX={v:2d}  →  premium={vix_to_premium(v)*100:.2f}%")
+
+    print(f"\nRunning backtest on {len(TICKERS)} tickers  [{START_DATE} → {END_DATE}]")
+    print("Rule: sell ATM put when monthly candle is UP  |  premium derived from VIX\n")
 
     all_pnl = []
+    all_details = []
 
     for tkr in TICKERS:
         try:
-            result = backtest_single(tkr)
+            result = backtest_single(tkr, vix_ms)
             if result.empty:
                 print(f"  {tkr:6s}  — no data, skipped")
                 continue
             result["weighted_pnl"] = result["pnl_pct"] * WEIGHT
-            all_pnl.append(result[["weighted_pnl", "trade", "outcome", "ticker"]])
+            all_pnl.append(result[["weighted_pnl", "vix", "premium"]])
+            all_details.append(result)
 
-            trades      = int(result["trade"].sum())
-            wins        = int((result["outcome"] == "expired").sum())
-            assigned    = int((result["outcome"] == "assigned").sum())
-            total_pnl   = result["pnl_pct"].sum() * 100
-            print(f"  {tkr:6s}  trades={trades:3d}  expired={wins:3d}  assigned={assigned:3d}  "
-                  f"total_pnl={total_pnl:+.1f}%")
+            trades   = int(result["trade"].sum())
+            wins     = int((result["outcome"] == "expired").sum())
+            assigned = int((result["outcome"] == "assigned").sum())
+            avg_prem = result.loc[result["trade"], "premium"].mean() * 100
+            total_pnl = result["pnl_pct"].sum() * 100
+            print(f"  {tkr:6s}  trades={trades:3d}  expired={wins:3d}  assigned={assigned:3d}"
+                  f"  avg_prem={avg_prem:.2f}%  total_pnl={total_pnl:+.1f}%")
         except Exception as e:
             print(f"  {tkr:6s}  ERROR: {e}")
 
@@ -136,16 +194,15 @@ def run_backtest() -> dict:
         print("No data returned.")
         return {}
 
-    combined = pd.concat(all_pnl)
-
-    # Sum weighted P&L across all stocks per month
+    combined    = pd.concat(all_pnl)
     monthly_pnl = combined.groupby(combined.index)["weighted_pnl"].sum().sort_index()
     monthly_pnl.index.name = "date"
 
-    # Portfolio equity curve (cumulative compound)
+    # Average VIX per month (across all traded positions)
+    avg_vix_monthly = combined.groupby(combined.index)["vix"].mean()
+
     equity = (1 + monthly_pnl).cumprod()
 
-    # ---- Summary stats ----
     total_return = float(equity.iloc[-1] - 1)
     n_months     = len(monthly_pnl)
     ann_return   = (1 + total_return) ** (12 / n_months) - 1
@@ -155,12 +212,16 @@ def run_backtest() -> dict:
     win_months   = int((monthly_pnl > 0).sum())
     flat_months  = int((monthly_pnl == 0).sum())
     loss_months  = int((monthly_pnl < 0).sum())
+    avg_vix      = float(avg_vix_monthly.mean())
+    avg_premium  = vix_to_premium(avg_vix) * 100
 
     print("\n" + "="*58)
-    print("  PORTFOLIO AGGREGATE RESULTS  (equal weight, 50 stocks)")
+    print("  PORTFOLIO AGGREGATE RESULTS  (VIX-based premium)")
     print("="*58)
     print(f"  Period          : {monthly_pnl.index[0].date()} → {monthly_pnl.index[-1].date()}")
     print(f"  Months          : {n_months}")
+    print(f"  Avg VIX         : {avg_vix:.1f}")
+    print(f"  Avg Premium     : {avg_premium:.2f}%")
     print(f"  Total Return    : {total_return*100:+.2f}%")
     print(f"  Ann. Return     : {ann_return*100:+.2f}%")
     print(f"  Ann. Volatility : {ann_vol*100:.2f}%")
@@ -172,24 +233,33 @@ def run_backtest() -> dict:
     print("="*58)
 
     return {
-        "monthly_pnl":   monthly_pnl,
-        "equity_curve":  equity,
-        "total_return":  total_return,
-        "ann_return":    ann_return,
-        "ann_vol":       ann_vol,
-        "sharpe":        sharpe,
-        "max_drawdown":  max_dd,
-        "win_months":    win_months,
-        "flat_months":   flat_months,
-        "loss_months":   loss_months,
-        "n_months":      n_months,
+        "monthly_pnl":     monthly_pnl,
+        "equity_curve":    equity,
+        "avg_vix_monthly": avg_vix_monthly,
+        "total_return":    total_return,
+        "ann_return":      ann_return,
+        "ann_vol":         ann_vol,
+        "sharpe":          sharpe,
+        "max_drawdown":    max_dd,
+        "win_months":      win_months,
+        "flat_months":     flat_months,
+        "loss_months":     loss_months,
+        "n_months":        n_months,
+        "avg_vix":         avg_vix,
+        "avg_premium_pct": avg_premium,
     }
 
 
 if __name__ == "__main__":
+    current_month_estimate()
     results = run_backtest()
 
     if results:
         results["equity_curve"].to_csv("equity_curve.csv")
         results["monthly_pnl"].to_csv("monthly_pnl.csv")
-        print("\nSaved: equity_curve.csv  |  monthly_pnl.csv")
+        vix_pnl = pd.DataFrame({
+            "monthly_pnl": results["monthly_pnl"],
+            "avg_vix":     results["avg_vix_monthly"],
+        })
+        vix_pnl.to_csv("monthly_pnl_with_vix.csv")
+        print("\nSaved: equity_curve.csv  |  monthly_pnl_with_vix.csv")
