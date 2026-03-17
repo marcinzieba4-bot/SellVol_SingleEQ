@@ -177,6 +177,22 @@ def _wait_for_download(download_dir: Path, timeout: int = 30) -> Path | None:
 # Download one historical options chain from Barchart
 # ---------------------------------------------------------------------------
 
+def _page_looks_like_html(driver: webdriver.Chrome) -> bool:
+    """Return True if the current page is HTML (not a file download trigger)."""
+    try:
+        ct = driver.execute_script("return document.contentType || ''")
+        if ct and "text/html" in ct:
+            return True
+    except Exception:
+        pass
+    # If we can read document.body, it's HTML
+    try:
+        body = driver.find_element(By.TAG_NAME, "body")
+        return body is not None
+    except Exception:
+        return False
+
+
 def download_historical_chain(
     driver: webdriver.Chrome,
     download_dir: Path,
@@ -203,12 +219,19 @@ def download_historical_chain(
 
     # ------------------------------------------------------------------
     # Strategy 1: historical snapshot (tradeDate parameter)
+    # tradeDate is a Barchart premium parameter; timeout kept short because
+    # it may not be supported for all accounts / date ranges.
     # ------------------------------------------------------------------
     snap_url = base_url + f"&tradeDate={observation_date.isoformat()}"
     driver.get(snap_url)
-    result = _wait_for_download(download_dir, timeout=20)
+    result = _wait_for_download(download_dir, timeout=10)
     if result and result.stat().st_size > 200:
         return result, "entry_snapshot"
+
+    # Check what page we landed on (helps diagnose redirect/error)
+    landed_url = driver.current_url
+    page_title  = driver.title
+    is_html     = _page_looks_like_html(driver)
 
     # Clear any partial download
     for f in download_dir.glob("*.csv"):
@@ -218,9 +241,31 @@ def download_historical_chain(
     # Strategy 2: settlement / last-traded prices (no date filter)
     # ------------------------------------------------------------------
     driver.get(base_url)
-    result = _wait_for_download(download_dir, timeout=20)
+    result = _wait_for_download(download_dir, timeout=15)
     if result and result.stat().st_size > 200:
         return result, "settlement"
+
+    # Log diagnostic info so the user can see what Barchart returned
+    landed_url2 = driver.current_url
+    page_title2  = driver.title
+    print(f"\n    [diag] tradeDate URL : {snap_url}")
+    print(f"    [diag]  → landed on  : {landed_url}  ({page_title})")
+    print(f"    [diag] plain URL     : {base_url}")
+    print(f"    [diag]  → landed on  : {landed_url2}  ({page_title2})")
+    # Check for known error/redirect patterns
+    if "login" in landed_url2.lower():
+        print("    [diag] Redirected to login — session may have expired")
+    elif "options" in landed_url2.lower() and "download" not in landed_url2.lower():
+        print("    [diag] Redirected to options page — expiry may not exist in Barchart data")
+    elif is_html:
+        # Try to read a short snippet of the page body for clues
+        try:
+            snippet = driver.execute_script(
+                "return (document.body.innerText || '').substring(0, 300)"
+            )
+            print(f"    [diag] Page text: {snippet[:200].strip()}")
+        except Exception:
+            pass
 
     return None, "failed"
 
