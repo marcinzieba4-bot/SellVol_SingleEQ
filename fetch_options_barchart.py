@@ -257,16 +257,22 @@ def get_available_expiries(driver: webdriver.Chrome, ticker: str) -> list[date]:
 
     expiries: list[date] = []
 
-    # Strategy 1: <select> element with expiry options
+    # Strategy 1: <select name="expiration"> — wait for AngularJS to populate options
+    # (The element is present immediately but options are injected asynchronously.)
     for sel in [
         'select[name="expiration"]',
+        'select#expiration',
         'select[id*="expir"]',
         'select[class*="expir"]',
-        'select',                      # fallback to first select on page
     ]:
         try:
-            el = wait.until(EC.presence_of_element_located((By.CSS_SELECTOR, sel)))
-            select = Select(el)
+            # Wait for element to appear
+            wait.until(EC.presence_of_element_located((By.CSS_SELECTOR, sel)))
+            # Then wait until at least 2 options are populated (Angular renders async)
+            WebDriverWait(driver, WAIT).until(
+                lambda d, s=sel: len(Select(d.find_element(By.CSS_SELECTOR, s)).options) > 1
+            )
+            select = Select(driver.find_element(By.CSS_SELECTOR, sel))
             for opt in select.options:
                 txt = opt.text.strip()
                 if not txt or txt.lower() in ("select", "expiration"):
@@ -277,10 +283,31 @@ def get_available_expiries(driver: webdriver.Chrome, ticker: str) -> list[date]:
                     continue
             if expiries:
                 break
-        except TimeoutException:
+        except (TimeoutException, NoSuchElementException):
             continue
 
-    # Strategy 2: date pill / button elements (some Barchart layouts)
+    # Strategy 2: JavaScript extraction — works even with custom styled dropdowns
+    if not expiries:
+        try:
+            raw = driver.execute_script("""
+                const texts = [];
+                document.querySelectorAll('select').forEach(sel => {
+                    Array.from(sel.options).forEach(opt => {
+                        const t = opt.text.trim();
+                        if (t) texts.push(t);
+                    });
+                });
+                return texts;
+            """)
+            for txt in (raw or []):
+                try:
+                    expiries.append(pd.to_datetime(txt).date())
+                except (ValueError, TypeError):
+                    continue
+        except Exception:
+            pass
+
+    # Strategy 3: date pill / button elements (alternate Barchart layouts)
     if not expiries:
         for sel in [
             '[class*="expiration"] a',
@@ -368,9 +395,10 @@ def _wait_for_download(download_dir: Path, timeout: int = 30) -> Path | None:
 def download_options_csv(
     driver: webdriver.Chrome,
     download_dir: Path,
+    ticker: str = "",
+    expiry: date | None = None,
 ) -> Path | None:
     """Click the Download button and wait for the file to appear."""
-    wait = WebDriverWait(driver, WAIT)
 
     # Clear any existing CSVs in download_dir so we can detect the new one
     for f in download_dir.glob("*.csv"):
@@ -378,10 +406,14 @@ def download_options_csv(
 
     download_clicked = False
 
-    # Strategy 1: button/link with "download" in class, id, or text
+    # Strategy 1: known Barchart button selectors (most specific first)
     for sel in [
-        'a[class*="download"]',
+        'button#download',
+        'button.download',
+        'a#download',
+        'a.download',
         'button[class*="download"]',
+        'a[class*="download"]',
         'a[id*="download"]',
         'a[href*="download"]',
         'a[href*=".csv"]',
@@ -397,7 +429,7 @@ def download_options_csv(
         if download_clicked:
             break
 
-    # Strategy 2: look for "Download" text link
+    # Strategy 2: look for "Download" text anywhere
     if not download_clicked:
         for el in driver.find_elements(By.XPATH, '//*[contains(text(),"Download")]'):
             try:
@@ -407,11 +439,24 @@ def download_options_csv(
             except ElementNotInteractableException:
                 continue
 
-    if not download_clicked:
-        print("    WARNING: Download button not found — skipping")
-        return None
+    if download_clicked:
+        return _wait_for_download(download_dir)
 
-    return _wait_for_download(download_dir)
+    # Strategy 3: direct download URL (bypasses UI entirely)
+    if ticker and expiry:
+        expiry_str = expiry.strftime("%Y-%m-%d")
+        dl_url = (
+            f"https://www.barchart.com/stocks/quotes/{ticker}"
+            f"/options/download?expiration={expiry_str}&type=put&moneyness=allRows"
+        )
+        print(f"    Download button not found — trying direct URL")
+        driver.get(dl_url)
+        result = _wait_for_download(download_dir, timeout=20)
+        if result:
+            return result
+
+    print("    WARNING: Download failed — no button found and direct URL produced no file")
+    return None
 
 
 # ---------------------------------------------------------------------------
@@ -531,7 +576,7 @@ def process_ticker(
         print(f"    WARNING: expiry selection failed: {e}")
 
     # 5. Download CSV
-    csv_path = download_options_csv(driver, download_dir)
+    csv_path = download_options_csv(driver, download_dir, ticker=ticker, expiry=expiry)
     if csv_path is None:
         print("    ERROR: Download failed or timed out")
         return None
