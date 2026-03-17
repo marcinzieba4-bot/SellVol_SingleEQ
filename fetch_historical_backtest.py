@@ -80,35 +80,38 @@ DELAY = 2.5  # polite pause between downloads
 
 def _monthly_schedule(start: date, end: date) -> list[tuple[date, date]]:
     """
-    Generate (observation_date, target_expiry) pairs for every month in
-    [start, end].
+    Generate non-overlapping (observation_date, target_expiry) pairs.
 
-    observation_date = first business day (Mon-Fri) of the month
-    target_expiry    = standard monthly expiry closest to 30 DTE from obs date:
-                       - try current month's 3rd Friday if DTE >= 25
-                       - otherwise use following month's 3rd Friday
+    observation_date = start, then each subsequent obs = first business day
+                       after the previous expiry (no overlap between trades)
+    target_expiry    = nearest standard monthly (3rd Friday) with >= 25 DTE
+                       from the observation date
     """
     pairs = []
-    y, m = start.year, start.month
-    while date(y, m, 1) <= end:
-        # First business day of month
-        obs = date(y, m, 1)
-        while obs.weekday() >= 5:
-            obs += timedelta(days=1)
 
-        # Try current month's 3rd Friday first
+    # Move start to first business day
+    obs = start
+    while obs.weekday() >= 5:
+        obs += timedelta(days=1)
+
+    while obs <= end:
+        y, m = obs.year, obs.month
+
+        # Find the nearest monthly expiry with >= 25 DTE
         expiry = _third_friday(y, m)
-        dte    = (expiry - obs).days
-        if dte < 25:
-            # Roll to next month (gives ~44-50 DTE)
+        if (expiry - obs).days < 25:
             ny, nm = (y, m + 1) if m < 12 else (y + 1, 1)
             expiry = _third_friday(ny, nm)
 
+        if expiry > end:
+            break
+
         pairs.append((obs, expiry))
 
-        m += 1
-        if m > 12:
-            m, y = 1, y + 1
+        # Next observation: first business day after expiry (no overlap)
+        obs = expiry + timedelta(days=1)
+        while obs.weekday() >= 5:
+            obs += timedelta(days=1)
 
     return pairs
 
