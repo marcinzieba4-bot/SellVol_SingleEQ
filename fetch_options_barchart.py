@@ -446,45 +446,72 @@ def download_options_csv(
     expiry: date | None = None,
     expiry_value: str = "",
 ) -> Path | None:
-    """Click the Download button and wait for the file to appear."""
+    """Download the options CSV for the given ticker/expiry."""
 
     # Clear any existing CSVs in download_dir so we can detect the new one
     for f in download_dir.glob("*.csv"):
         f.unlink()
 
-    # Always dismiss any consent/GDPR overlay first — it intercepts button clicks
+    # ------------------------------------------------------------------ #
+    # Strategy 1: direct download URL — most reliable when logged in.     #
+    # Barchart honours session cookies; no JS rendering issues.            #
+    # ------------------------------------------------------------------ #
+    if ticker and expiry:
+        expiry_param = expiry_value if expiry_value else expiry.strftime("%Y-%m-%d")
+        dl_url = (
+            f"https://www.barchart.com/stocks/quotes/{ticker}"
+            f"/options/download?expiration={expiry_param}&type=put&moneyness=allRows"
+        )
+        print(f"    Downloading via direct URL (expiry={expiry_param}) …")
+        driver.get(dl_url)
+        result = _wait_for_download(download_dir, timeout=30)
+        if result:
+            return result
+        print(f"    Direct URL produced no file — trying UI button …")
+
+    # ------------------------------------------------------------------ #
+    # Strategy 2: click the Download button in the page toolbar.          #
+    # Must be back on the options page; re-navigate if needed.            #
+    # ------------------------------------------------------------------ #
+    if ticker and expiry:
+        options_url = OPTIONS_URL.format(symbol=ticker)
+        if driver.current_url.rstrip("/").split("?")[0] != options_url.rstrip("/"):
+            driver.get(options_url)
+            time.sleep(2)
+            # Re-select the expiry after navigating back
+            try:
+                select_expiry(driver, expiry)
+            except Exception:
+                pass
+
+    # Dismiss any consent overlay before clicking
     _dismiss_cmp_overlay(driver)
+
+    def _click_el(el) -> bool:
+        """Try native click, then JS click. Returns True if click fired."""
+        try:
+            el.click()
+            return True
+        except (ElementNotInteractableException, ElementClickInterceptedException):
+            pass
+        try:
+            driver.execute_script("arguments[0].click();", el)
+            return True
+        except Exception:
+            return False
 
     download_clicked = False
 
-    def _click_el(el) -> bool:
-        """Try native click, then JS click on failure. Returns True on success."""
-        for attempt in ("native", "js"):
-            try:
-                if attempt == "native":
-                    el.click()
-                else:
-                    driver.execute_script("arguments[0].click();", el)
-                return True
-            except ElementNotInteractableException:
-                if attempt == "native":
-                    continue
-            except Exception:
-                break
-        return False
-
-    # Strategy 1: known Barchart download button selectors (most specific first)
-    # Confirmed from live page: <a class="toolbar-button download" ...>
+    # Confirmed from live page HTML: <a class="toolbar-button download" data-bc-download-button="...">
     for sel in [
-        'a.toolbar-button.download',       # confirmed selector from page HTML
-        'a[data-bc-download-button]',      # confirmed data attribute
+        'a.toolbar-button.download',
+        'a[data-bc-download-button]',
         'button#download',
         'button.download',
         'a#download',
         'a.download',
         'button[class*="download"]',
         'a[class*="download"]',
-        'a[id*="download"]',
         'a[href*="download"]',
         'a[href*=".csv"]',
     ]:
@@ -495,7 +522,6 @@ def download_options_csv(
         if download_clicked:
             break
 
-    # Strategy 2: look for "Download" text anywhere
     if not download_clicked:
         for el in driver.find_elements(By.XPATH, '//*[contains(text(),"Download")]'):
             if _click_el(el):
@@ -503,23 +529,13 @@ def download_options_csv(
                 break
 
     if download_clicked:
-        return _wait_for_download(download_dir)
-
-    # Strategy 3: direct download URL (bypasses UI entirely)
-    # Use full value "2026-04-17-m" if available, else bare date "2026-04-17"
-    if ticker and expiry:
-        expiry_param = expiry_value if expiry_value else expiry.strftime("%Y-%m-%d")
-        dl_url = (
-            f"https://www.barchart.com/stocks/quotes/{ticker}"
-            f"/options/download?expiration={expiry_param}&type=put&moneyness=allRows"
-        )
-        print(f"    Download button not found — trying direct URL")
-        driver.get(dl_url)
-        result = _wait_for_download(download_dir, timeout=20)
+        result = _wait_for_download(download_dir, timeout=30)
         if result:
             return result
+        print("    Button clicked but no file appeared in download dir")
+        print(f"    (download_dir={download_dir})")
 
-    print("    WARNING: Download failed — no button found and direct URL produced no file")
+    print("    WARNING: All download strategies failed")
     return None
 
 
