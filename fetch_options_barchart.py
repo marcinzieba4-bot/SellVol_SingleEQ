@@ -384,6 +384,47 @@ def select_expiry(driver: webdriver.Chrome, expiry: date) -> str:
 # Download the CSV
 # ---------------------------------------------------------------------------
 
+def _dismiss_cmp_overlay(driver: webdriver.Chrome) -> None:
+    """
+    Dismiss Barchart's GDPR/cookie consent overlay (CMP wrapper).
+    The overlay intercepts clicks when present; we must remove it first.
+    """
+    try:
+        # Hide via JS — works regardless of which button/text the CMP shows
+        driver.execute_script("""
+            const ids = ['cmpwrapper', 'cmp-wrapper', 'gdpr-banner', 'cookie-banner',
+                         'consent-banner', 'onetrust-banner-sdk'];
+            ids.forEach(id => {
+                const el = document.getElementById(id);
+                if (el) el.style.display = 'none';
+            });
+            // Also hide by common class patterns
+            document.querySelectorAll(
+                '[class*="cmp"], [class*="gdpr"], [class*="cookie-consent"], ' +
+                '[class*="consent-modal"], [id*="cmp"]'
+            ).forEach(el => { el.style.display = 'none'; });
+        """)
+    except Exception:
+        pass
+
+    # Also try clicking an explicit Accept / Close button if visible
+    for sel in [
+        'button#cmpbntyestxt',
+        'button[title*="Accept"]',
+        'button[aria-label*="Accept"]',
+        'button[aria-label*="Close"]',
+        '.cmp-intro_acceptAll',
+        '#cmp-btn-accept',
+        'button.accept',
+    ]:
+        try:
+            btn = driver.find_element(By.CSS_SELECTOR, sel)
+            driver.execute_script("arguments[0].click();", btn)
+            time.sleep(0.5)
+            break
+        except (NoSuchElementException, ElementNotInteractableException):
+            continue
+
 def _wait_for_download(download_dir: Path, timeout: int = 30) -> Path | None:
     """Poll download_dir until a new .csv file appears (not still downloading)."""
     deadline = time.time() + timeout
@@ -411,10 +452,32 @@ def download_options_csv(
     for f in download_dir.glob("*.csv"):
         f.unlink()
 
+    # Always dismiss any consent/GDPR overlay first — it intercepts button clicks
+    _dismiss_cmp_overlay(driver)
+
     download_clicked = False
 
-    # Strategy 1: known Barchart button selectors (most specific first)
+    def _click_el(el) -> bool:
+        """Try native click, then JS click on failure. Returns True on success."""
+        for attempt in ("native", "js"):
+            try:
+                if attempt == "native":
+                    el.click()
+                else:
+                    driver.execute_script("arguments[0].click();", el)
+                return True
+            except ElementNotInteractableException:
+                if attempt == "native":
+                    continue
+            except Exception:
+                break
+        return False
+
+    # Strategy 1: known Barchart download button selectors (most specific first)
+    # Confirmed from live page: <a class="toolbar-button download" ...>
     for sel in [
+        'a.toolbar-button.download',       # confirmed selector from page HTML
+        'a[data-bc-download-button]',      # confirmed data attribute
         'button#download',
         'button.download',
         'a#download',
@@ -425,26 +488,19 @@ def download_options_csv(
         'a[href*="download"]',
         'a[href*=".csv"]',
     ]:
-        elements = driver.find_elements(By.CSS_SELECTOR, sel)
-        for el in elements:
-            try:
-                el.click()
+        for el in driver.find_elements(By.CSS_SELECTOR, sel):
+            if _click_el(el):
                 download_clicked = True
                 break
-            except ElementNotInteractableException:
-                continue
         if download_clicked:
             break
 
     # Strategy 2: look for "Download" text anywhere
     if not download_clicked:
         for el in driver.find_elements(By.XPATH, '//*[contains(text(),"Download")]'):
-            try:
-                el.click()
+            if _click_el(el):
                 download_clicked = True
                 break
-            except ElementNotInteractableException:
-                continue
 
     if download_clicked:
         return _wait_for_download(download_dir)
