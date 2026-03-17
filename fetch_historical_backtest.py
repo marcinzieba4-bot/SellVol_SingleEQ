@@ -119,22 +119,38 @@ def _monthly_schedule(start: date, end: date) -> list[tuple[date, date]]:
 
 def get_historical_price(ticker: str, target_date: date) -> float | None:
     """
-    Return the closing price of ticker on target_date (or the nearest prior
-    trading day within a 5-day window) using yfinance.
+    Return the ACTUAL (unadjusted) closing price of ticker on target_date.
+
+    yfinance always returns split-adjusted prices. To recover the actual
+    historical price (needed to match against Barchart's option strikes),
+    we multiply the adjusted price by the cumulative factor of all splits
+    that occurred AFTER target_date.
+
+    Example for NVDA: 4:1 split 2021-07-20, 10:1 split 2024-06-10.
+    yfinance shows ~$3.61 for 2017-06-01; actual was ~$144.36 ($3.61 × 40).
     """
     start = target_date - timedelta(days=7)
     end   = target_date + timedelta(days=1)   # yfinance end is exclusive
     try:
-        df = yf.download(ticker, start=start.isoformat(), end=end.isoformat(),
-                         progress=False, auto_adjust=True)
+        t = yf.Ticker(ticker)
+        df = t.history(start=start.isoformat(), end=end.isoformat(), auto_adjust=True)
         if df.empty:
             return None
-        # Keep rows on or before target_date, take the last one
         df.index = pd.to_datetime(df.index).date
         df = df[df.index <= target_date]
         if df.empty:
             return None
-        return float(df["Close"].iloc[-1])
+        adj_price = float(df["Close"].iloc[-1])
+
+        # Un-apply splits that happened after target_date
+        splits = t.splits
+        if not splits.empty:
+            splits.index = pd.to_datetime(splits.index).date
+            future_splits = splits[splits.index > target_date]
+            for factor in future_splits:
+                adj_price *= float(factor)
+
+        return adj_price
     except Exception as e:
         print(f"    yfinance error for {ticker} on {target_date}: {e}")
         return None
