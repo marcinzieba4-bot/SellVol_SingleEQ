@@ -64,11 +64,8 @@ from fetch_options_barchart import (
 )
 
 # ---------------------------------------------------------------------------
-DOWNLOAD_BASE = (
-    "https://www.barchart.com/stocks/quotes/{symbol}/options/download"
-    "?expiration={expiry_value}&type=put&moneyness=allRows"
-)
-LOGIN_URL = "https://www.barchart.com/login"
+OPTIONS_PAGE = "https://www.barchart.com/stocks/quotes/{symbol}/options"
+LOGIN_URL    = "https://www.barchart.com/login"
 
 WAIT  = 20   # seconds to wait for page elements
 DELAY = 2.5  # polite pause between downloads
@@ -180,20 +177,53 @@ def _wait_for_download(download_dir: Path, timeout: int = 30) -> Path | None:
 # Download one historical options chain from Barchart
 # ---------------------------------------------------------------------------
 
-def _page_looks_like_html(driver: webdriver.Chrome) -> bool:
-    """Return True if the current page is HTML (not a file download trigger)."""
-    try:
-        ct = driver.execute_script("return document.contentType || ''")
-        if ct and "text/html" in ct:
+def _click_download_button(driver: webdriver.Chrome, download_dir: Path, timeout: int = 15) -> Path | None:
+    """
+    Click Barchart's Download button (toolbar) and wait for the CSV file.
+    Returns the Path of the downloaded file, or None if nothing appeared.
+    """
+    def _click_el(el) -> bool:
+        try:
+            el.click()
             return True
-    except Exception:
-        pass
-    # If we can read document.body, it's HTML
-    try:
-        body = driver.find_element(By.TAG_NAME, "body")
-        return body is not None
-    except Exception:
-        return False
+        except Exception:
+            pass
+        try:
+            driver.execute_script("arguments[0].click();", el)
+            return True
+        except Exception:
+            return False
+
+    _dismiss_cmp_overlay(driver)
+
+    download_selectors = [
+        'a.toolbar-button.download',
+        'a[data-bc-download-button]',
+        'button#download',
+        'button.download',
+        'a#download',
+        'a.download',
+        'button[class*="download"]',
+        'a[class*="download"]',
+        'a[href*="download"]',
+    ]
+    for sel in download_selectors:
+        for el in driver.find_elements(By.CSS_SELECTOR, sel):
+            if _click_el(el):
+                result = _wait_for_download(download_dir, timeout=timeout)
+                if result and result.stat().st_size > 200:
+                    return result
+                break  # clicked but no file — try next selector
+
+    # Fallback: any element with text "Download"
+    for el in driver.find_elements(By.XPATH, '//*[contains(text(),"Download")]'):
+        if _click_el(el):
+            result = _wait_for_download(download_dir, timeout=timeout)
+            if result and result.stat().st_size > 200:
+                return result
+            break
+
+    return None
 
 
 def download_historical_chain(
@@ -204,71 +234,63 @@ def download_historical_chain(
     observation_date: date,
 ) -> tuple[Path | None, str]:
     """
-    Try to download the put chain for (ticker, expiry) from Barchart.
+    Download the put chain for (ticker, expiry) from Barchart by navigating
+    the OPTIONS PAGE (not the /download endpoint).
 
-    Tries two URLs:
-      1. With &tradeDate=YYYY-MM-DD  →  prices as of observation_date (entry snapshot)
-      2. Without tradeDate           →  prices at expiry (settlement data)
+    Barchart's /options/download endpoint redirects historical expiries to the
+    current week — it only works for live/future expiries.  The correct approach
+    for historical data is to load the options page with the expiry and tradeDate
+    query parameters and then click the Download button.
+
+    Tries:
+      1. /options?expiration=YYYY-MM-DD-m&tradeDate=YYYY-MM-DD  → entry snapshot
+      2. /options?expiration=YYYY-MM-DD-m                       → settlement prices
 
     Returns (csv_path_or_None, source_label).
-    source_label is "entry_snapshot", "settlement", or "failed".
     """
-    # Clear stale CSVs
+    expiry_str = expiry.isoformat()      # "2017-07-21"
+    obs_str    = observation_date.isoformat()
+    base_page  = OPTIONS_PAGE.format(symbol=ticker)
+
+    # ------------------------------------------------------------------
+    # Strategy 1: historical snapshot (tradeDate param on the options page)
+    # ------------------------------------------------------------------
     for f in download_dir.glob("*.csv"):
         f.unlink()
 
-    expiry_value = f"{expiry.isoformat()}-m"   # e.g. "2017-07-21-m"
-    base_url = DOWNLOAD_BASE.format(symbol=ticker, expiry_value=expiry_value)
+    snap_page = f"{base_page}?expiration={expiry_str}-m&tradeDate={obs_str}"
+    driver.get(snap_page)
+    time.sleep(3)   # wait for AngularJS to render the historical chain
 
-    # ------------------------------------------------------------------
-    # Strategy 1: historical snapshot (tradeDate parameter)
-    # tradeDate is a Barchart premium parameter; timeout kept short because
-    # it may not be supported for all accounts / date ranges.
-    # ------------------------------------------------------------------
-    snap_url = base_url + f"&tradeDate={observation_date.isoformat()}"
-    driver.get(snap_url)
-    result = _wait_for_download(download_dir, timeout=10)
-    if result and result.stat().st_size > 200:
+    result = _click_download_button(driver, download_dir, timeout=15)
+    if result:
         return result, "entry_snapshot"
 
-    # Check what page we landed on (helps diagnose redirect/error)
-    landed_url = driver.current_url
-    page_title  = driver.title
-    is_html     = _page_looks_like_html(driver)
-
-    # Clear any partial download
+    # ------------------------------------------------------------------
+    # Strategy 2: settlement / last-traded (no tradeDate filter)
+    # ------------------------------------------------------------------
     for f in download_dir.glob("*.csv"):
         f.unlink()
 
-    # ------------------------------------------------------------------
-    # Strategy 2: settlement / last-traded prices (no date filter)
-    # ------------------------------------------------------------------
-    driver.get(base_url)
-    result = _wait_for_download(download_dir, timeout=15)
-    if result and result.stat().st_size > 200:
+    plain_page = f"{base_page}?expiration={expiry_str}-m"
+    driver.get(plain_page)
+    time.sleep(3)
+
+    result = _click_download_button(driver, download_dir, timeout=15)
+    if result:
         return result, "settlement"
 
-    # Log diagnostic info so the user can see what Barchart returned
-    landed_url2 = driver.current_url
-    page_title2  = driver.title
-    print(f"\n    [diag] tradeDate URL : {snap_url}")
-    print(f"    [diag]  → landed on  : {landed_url}  ({page_title})")
-    print(f"    [diag] plain URL     : {base_url}")
-    print(f"    [diag]  → landed on  : {landed_url2}  ({page_title2})")
-    # Check for known error/redirect patterns
-    if "login" in landed_url2.lower():
-        print("    [diag] Redirected to login — session may have expired")
-    elif "options" in landed_url2.lower() and "download" not in landed_url2.lower():
-        print("    [diag] Redirected to options page — expiry may not exist in Barchart data")
-    elif is_html:
-        # Try to read a short snippet of the page body for clues
-        try:
-            snippet = driver.execute_script(
-                "return (document.body.innerText || '').substring(0, 300)"
-            )
-            print(f"    [diag] Page text: {snippet[:200].strip()}")
-        except Exception:
-            pass
+    # Diagnostics
+    print(f"\n    [diag] snap page  : {snap_page}")
+    print(f"    [diag] plain page : {plain_page}")
+    print(f"    [diag] landed on  : {driver.current_url}")
+    try:
+        snippet = driver.execute_script(
+            "return (document.body.innerText || '').substring(0, 300)"
+        )
+        print(f"    [diag] page text  : {snippet[:200].strip()}")
+    except Exception:
+        pass
 
     return None, "failed"
 
