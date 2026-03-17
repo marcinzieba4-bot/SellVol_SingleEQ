@@ -258,7 +258,13 @@ def download_historical_chain(
     for f in download_dir.glob("*.csv"):
         f.unlink()
 
-    snap_page = f"{base_page}?expiration={expiry_str}-m&tradeDate={obs_str}"
+    # type=put&moneyness=allRows ensures the page shows ALL put strikes
+    # (not just near-the-money relative to today's price) so that the
+    # historical ATM strike at observation_date is always present in the CSV.
+    snap_page = (
+        f"{base_page}?expiration={expiry_str}-m"
+        f"&tradeDate={obs_str}&type=put&moneyness=allRows"
+    )
     driver.get(snap_page)
     time.sleep(3)   # wait for AngularJS to render the historical chain
 
@@ -272,7 +278,7 @@ def download_historical_chain(
     for f in download_dir.glob("*.csv"):
         f.unlink()
 
-    plain_page = f"{base_page}?expiration={expiry_str}-m"
+    plain_page = f"{base_page}?expiration={expiry_str}-m&type=put&moneyness=allRows"
     driver.get(plain_page)
     time.sleep(3)
 

@@ -573,15 +573,27 @@ def extract_atm_put(
         print(f"    WARNING: No strike column found. Columns: {list(df.columns)}")
         return None
 
-    # Identify type column (Call/Put)
+    # Filter to puts — try multiple strategies in order of reliability
+
+    # Strategy A: explicit type/call-put column
     type_col = next(
         (c for c in df.columns if c in ("type", "option_type", "call/put", "putcall")), None
     )
-
-    # Filter to puts if possible
     if type_col:
         put_mask = df[type_col].str.strip().str.lower().str.startswith("p")
         df = df[put_mask]
+
+    # Strategy B: option symbol encodes type — OCC format TICKER+YYMMDD+P+strike
+    # e.g. "NVDA250221P00138000"  (P = put, C = call)
+    if df.empty or type_col is None:
+        sym_col = next(
+            (c for c in df.columns if c in ("symbol", "contract", "option_symbol", "ticker")), None
+        )
+        if sym_col is not None:
+            # Look for a capital P (or lowercase p) immediately after the date digits
+            put_mask = df[sym_col].astype(str).str.contains(r'\d{6}[Pp]', regex=True)
+            if put_mask.any():
+                df = df[put_mask]
 
     if df.empty:
         print("    WARNING: No put rows found in CSV")
