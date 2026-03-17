@@ -344,16 +344,59 @@ def process_month(
         return None
 
     row = atm.iloc[0].to_dict()
+    cols = [c.lower() for c in atm.columns]
 
-    # 4. Enrich with observation context
+    # ------------------------------------------------------------------
+    # 4a. Compute entry_premium = mid(bid, ask) at observation_date.
+    #     The "Last" column is the last TRADED price and may be stale by
+    #     days or weeks.  Bid/ask as-of the tradeDate are always fresh.
+    # ------------------------------------------------------------------
+    def _num(val) -> float | None:
+        try:
+            v = float(str(val).replace(",", "").replace("$", "").strip())
+            return v if v > 0 else None
+        except (ValueError, TypeError):
+            return None
+
+    bid_col  = next((c for c in atm.columns if c.lower() in ("bid", "bid_price", "bid price")), None)
+    ask_col  = next((c for c in atm.columns if c.lower() in ("ask", "ask_price", "ask price")), None)
+    last_col = next((c for c in atm.columns if c.lower() in ("last", "last_price", "last price", "close")), None)
+
+    bid  = _num(row.get(bid_col))  if bid_col  else None
+    ask  = _num(row.get(ask_col))  if ask_col  else None
+    last = _num(row.get(last_col)) if last_col else None
+
+    if bid is not None and ask is not None:
+        entry_premium = round((bid + ask) / 2, 4)
+        price_method  = "mid"
+    elif last is not None:
+        entry_premium = last
+        price_method  = "last"
+    else:
+        entry_premium = None
+        price_method  = "n/a"
+
+    if source == "settlement":
+        print("WARN:settlement-prices ", end="")
+
+    # ------------------------------------------------------------------
+    # 4b. Enrich row with observation context
+    # ------------------------------------------------------------------
     row["ticker"]           = ticker
     row["observation_date"] = observation_date.isoformat()
     row["expiry"]           = expiry.isoformat()
     row["dte_at_obs"]       = dte
     row["stock_price"]      = price
+    row["entry_premium"]    = entry_premium
+    row["price_method"]     = price_method
     row["data_source"]      = source
 
-    # Log IV if present
+    # Log option price and IV
+    if entry_premium is not None:
+        print(f"premium=${entry_premium:.2f}({price_method})", end="  ")
+    else:
+        print("premium=? ", end="  ")
+
     iv_col = next((c for c in atm.columns if "iv" in c.lower() or "implied" in c.lower()), None)
     if iv_col:
         try:
