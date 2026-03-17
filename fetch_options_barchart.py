@@ -285,6 +285,11 @@ def get_available_expiries(driver: webdriver.Chrome, ticker: str) -> list[date]:
     """
     Navigate to the options page and read the expiry dropdown.
     Returns a sorted list of date objects.
+
+    Barchart uses an AngularJS select: <select data-ng-model="selected">
+    Options have value="2026-04-17-m" (monthly) or "2026-03-18-w" (weekly).
+    The visible text is "2026-04-17 (m)" — NOT parseable directly by pd.to_datetime.
+    Always parse from the value attribute, taking the first 10 characters (YYYY-MM-DD).
     """
     url = OPTIONS_URL.format(symbol=ticker)
     driver.get(url)
@@ -292,28 +297,25 @@ def get_available_expiries(driver: webdriver.Chrome, ticker: str) -> list[date]:
 
     expiries: list[date] = []
 
-    # Strategy 1: <select name="expiration"> — wait for AngularJS to populate options
-    # (The element is present immediately but options are injected asynchronously.)
+    # Strategy 1: Barchart's AngularJS select (confirmed selector from live page)
     for sel in [
-        'select[name="expiration"]',
-        'select#expiration',
-        'select[id*="expir"]',
-        'select[class*="expir"]',
+        'select[data-ng-model="selected"]',   # confirmed from page HTML
+        'select[aria-label*="expir"]',         # aria-label="set expiration date"
+        'select[data-ng-model]',               # any ng-model select
     ]:
         try:
-            # Wait for element to appear
             wait.until(EC.presence_of_element_located((By.CSS_SELECTOR, sel)))
-            # Then wait until at least 2 options are populated (Angular renders async)
+            # Wait for Angular to inject <option> elements (async rendering)
             WebDriverWait(driver, WAIT).until(
                 lambda d, s=sel: len(Select(d.find_element(By.CSS_SELECTOR, s)).options) > 1
             )
             select = Select(driver.find_element(By.CSS_SELECTOR, sel))
             for opt in select.options:
-                txt = opt.text.strip()
-                if not txt or txt.lower() in ("select", "expiration"):
-                    continue
+                # value="2026-04-17-m"  →  take first 10 chars = "2026-04-17"
+                val = opt.get_attribute("value") or ""
+                date_str = val[:10]
                 try:
-                    expiries.append(pd.to_datetime(txt).date())
+                    expiries.append(pd.to_datetime(date_str).date())
                 except (ValueError, TypeError):
                     continue
             if expiries:
@@ -321,44 +323,24 @@ def get_available_expiries(driver: webdriver.Chrome, ticker: str) -> list[date]:
         except (TimeoutException, NoSuchElementException):
             continue
 
-    # Strategy 2: JavaScript extraction — works even with custom styled dropdowns
+    # Strategy 2: JavaScript — read value attributes directly (bypasses text parsing)
     if not expiries:
         try:
             raw = driver.execute_script("""
-                const texts = [];
-                document.querySelectorAll('select').forEach(sel => {
-                    Array.from(sel.options).forEach(opt => {
-                        const t = opt.text.trim();
-                        if (t) texts.push(t);
-                    });
+                const dates = [];
+                document.querySelectorAll('select[data-ng-model] option, select option').forEach(opt => {
+                    const v = (opt.value || '').trim();
+                    if (v.length >= 10) dates.push(v.substring(0, 10));
                 });
-                return texts;
+                return dates;
             """)
-            for txt in (raw or []):
+            for date_str in (raw or []):
                 try:
-                    expiries.append(pd.to_datetime(txt).date())
+                    expiries.append(pd.to_datetime(date_str).date())
                 except (ValueError, TypeError):
                     continue
         except Exception:
             pass
-
-    # Strategy 3: date pill / button elements (alternate Barchart layouts)
-    if not expiries:
-        for sel in [
-            '[class*="expiration"] a',
-            '[class*="expiry"] button',
-            'ul.expiration-dates li a',
-            'ul[class*="expir"] li',
-        ]:
-            elements = driver.find_elements(By.CSS_SELECTOR, sel)
-            for el in elements:
-                txt = el.text.strip()
-                try:
-                    expiries.append(pd.to_datetime(txt).date())
-                except (ValueError, TypeError):
-                    continue
-            if expiries:
-                break
 
     return sorted(set(expiries))
 
@@ -367,46 +349,35 @@ def get_available_expiries(driver: webdriver.Chrome, ticker: str) -> list[date]:
 # Select the chosen expiry in the dropdown / UI
 # ---------------------------------------------------------------------------
 
-def select_expiry(driver: webdriver.Chrome, expiry: date) -> None:
-    """Click / select the given expiry date in the options page UI."""
-    expiry_str = expiry.strftime("%Y-%m-%d")
-    wait = WebDriverWait(driver, WAIT)
+def select_expiry(driver: webdriver.Chrome, expiry: date) -> str:
+    """
+    Select the given expiry in the Barchart options page dropdown.
+    Returns the full option value string (e.g. "2026-04-17-m") on success,
+    or the bare ISO date string if selection failed.
+    """
+    expiry_prefix = expiry.isoformat()  # "2026-04-17"
 
-    # Strategy 1: <select> dropdown
+    # Barchart option values: "2026-04-17-m" or "2026-03-18-w"
+    # Match by value prefix so we handle both monthly and weekly suffixes.
     for sel in [
-        'select[name="expiration"]',
-        'select[id*="expir"]',
-        'select[class*="expir"]',
-        'select',
+        'select[data-ng-model="selected"]',
+        'select[aria-label*="expir"]',
+        'select[data-ng-model]',
     ]:
         try:
             el = driver.find_element(By.CSS_SELECTOR, sel)
             select = Select(el)
-            # Try to match by value or visible text
             for opt in select.options:
-                try:
-                    if pd.to_datetime(opt.text.strip()).date() == expiry:
-                        select.select_by_visible_text(opt.text.strip())
-                        time.sleep(1.5)  # let the chain reload
-                        return
-                except (ValueError, TypeError):
-                    continue
+                val = opt.get_attribute("value") or ""
+                if val.startswith(expiry_prefix):
+                    select.select_by_value(val)
+                    time.sleep(1.5)  # let the chain reload
+                    return val          # e.g. "2026-04-17-m"
         except (NoSuchElementException, ElementNotInteractableException):
             continue
 
-    # Strategy 2: clickable pill / link
-    all_links = driver.find_elements(By.XPATH, f'//*[contains(text(), "{expiry_str}")]')
-    if not all_links:
-        # Try formatted differently (e.g. "Mar 21, 2025")
-        formatted = expiry.strftime("%b %d, %Y").replace(" 0", " ")
-        all_links = driver.find_elements(By.XPATH, f'//*[contains(text(), "{formatted}")]')
-
-    if all_links:
-        all_links[0].click()
-        time.sleep(1.5)
-        return
-
-    print(f"    WARNING: Could not select expiry {expiry_str} in UI — using default")
+    print(f"    WARNING: Could not select expiry {expiry_prefix} in UI — using default")
+    return expiry_prefix
 
 
 # ---------------------------------------------------------------------------
@@ -432,6 +403,7 @@ def download_options_csv(
     download_dir: Path,
     ticker: str = "",
     expiry: date | None = None,
+    expiry_value: str = "",
 ) -> Path | None:
     """Click the Download button and wait for the file to appear."""
 
@@ -478,11 +450,12 @@ def download_options_csv(
         return _wait_for_download(download_dir)
 
     # Strategy 3: direct download URL (bypasses UI entirely)
+    # Use full value "2026-04-17-m" if available, else bare date "2026-04-17"
     if ticker and expiry:
-        expiry_str = expiry.strftime("%Y-%m-%d")
+        expiry_param = expiry_value if expiry_value else expiry.strftime("%Y-%m-%d")
         dl_url = (
             f"https://www.barchart.com/stocks/quotes/{ticker}"
-            f"/options/download?expiration={expiry_str}&type=put&moneyness=allRows"
+            f"/options/download?expiration={expiry_param}&type=put&moneyness=allRows"
         )
         print(f"    Download button not found — trying direct URL")
         driver.get(dl_url)
@@ -605,13 +578,15 @@ def process_ticker(
     print(f"    Selected expiry: {expiry}  ({dte} DTE)")
 
     # 4. Select expiry in UI (driver is already on options page)
+    expiry_value = expiry.isoformat()  # fallback; select_expiry returns full value e.g. "2026-04-17-m"
     try:
-        select_expiry(driver, expiry)
+        expiry_value = select_expiry(driver, expiry)
     except Exception as e:
         print(f"    WARNING: expiry selection failed: {e}")
 
     # 5. Download CSV
-    csv_path = download_options_csv(driver, download_dir, ticker=ticker, expiry=expiry)
+    csv_path = download_options_csv(driver, download_dir, ticker=ticker, expiry=expiry,
+                                    expiry_value=expiry_value)
     if csv_path is None:
         print("    ERROR: Download failed or timed out")
         return None
