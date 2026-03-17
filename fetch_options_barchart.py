@@ -10,7 +10,7 @@ For each of the 50 strategy stocks this script:
   6. Saves per-ticker CSV + a combined summary
 
 Usage:
-    pip install selenium webdriver-manager pandas
+    pip install selenium pandas
     export BARCHART_USER=your@email.com
     export BARCHART_PASS=yourpassword
     python fetch_options_barchart.py
@@ -43,14 +43,12 @@ from pathlib import Path
 
 from selenium import webdriver
 from selenium.webdriver.chrome.options import Options
-from selenium.webdriver.chrome.service import Service
 from selenium.webdriver.common.by import By
 from selenium.webdriver.support.ui import WebDriverWait, Select
 from selenium.webdriver.support import expected_conditions as EC
 from selenium.common.exceptions import (
     TimeoutException, NoSuchElementException, ElementNotInteractableException
 )
-from webdriver_manager.chrome import ChromeDriverManager
 
 # ---------------------------------------------------------------------------
 TICKERS = [
@@ -136,8 +134,8 @@ def setup_driver(download_dir: str, headless: bool = True) -> webdriver.Chrome:
     }
     opts.add_experimental_option("prefs", prefs)
 
-    service = Service(ChromeDriverManager().install())
-    return webdriver.Chrome(service=service, options=opts)
+    # Selenium 4.6+ includes its own driver manager — no webdriver-manager needed
+    return webdriver.Chrome(options=opts)
 
 
 # ---------------------------------------------------------------------------
