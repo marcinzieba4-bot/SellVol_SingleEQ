@@ -47,7 +47,8 @@ from selenium.webdriver.common.by import By
 from selenium.webdriver.support.ui import WebDriverWait, Select
 from selenium.webdriver.support import expected_conditions as EC
 from selenium.common.exceptions import (
-    TimeoutException, NoSuchElementException, ElementNotInteractableException
+    TimeoutException, NoSuchElementException,
+    ElementNotInteractableException, ElementClickInterceptedException,
 )
 
 # ---------------------------------------------------------------------------
@@ -142,10 +143,41 @@ def setup_driver(download_dir: str, headless: bool = True) -> webdriver.Chrome:
 # Login
 # ---------------------------------------------------------------------------
 
+def _dismiss_consent_overlay(driver: webdriver.Chrome) -> None:
+    """Dismiss cookie/GDPR consent banners that block clicks (e.g. #cmpwrapper)."""
+    # Try clicking known accept buttons inside consent iframes / overlays
+    for sel in [
+        '#cmpwrapper button[title*="Accept"]',
+        '#cmpwrapper button[class*="accept"]',
+        '#cmpwrapper button',
+        'button[title*="Accept"]',
+        'button[id*="accept"]',
+        'button[class*="accept-all"]',
+        '[aria-label*="Accept"]',
+    ]:
+        try:
+            btn = driver.find_element(By.CSS_SELECTOR, sel)
+            driver.execute_script("arguments[0].click();", btn)
+            time.sleep(0.5)
+            return
+        except NoSuchElementException:
+            continue
+
+    # If no button found, just hide the overlay via JS so it stops intercepting clicks
+    driver.execute_script("""
+        const el = document.getElementById('cmpwrapper');
+        if (el) el.style.display = 'none';
+    """)
+
+
 def login(driver: webdriver.Chrome, username: str, password: str) -> None:
     print("  Logging in to Barchart …")
     driver.get(LOGIN_URL)
     wait = WebDriverWait(driver, WAIT)
+
+    # Dismiss any consent/cookie overlay before interacting with the form
+    time.sleep(1)
+    _dismiss_consent_overlay(driver)
 
     # Email field — try multiple selectors
     for sel in ['input[name="email"]', 'input[type="email"]', '#email']:
@@ -171,11 +203,14 @@ def login(driver: webdriver.Chrome, username: str, password: str) -> None:
     else:
         raise RuntimeError("Could not find password input on Barchart login page.")
 
-    # Submit button
-    for sel in ['button[type="submit"]', 'input[type="submit"]', 'button.login']:
+    # Submit button — use JS click to bypass any remaining overlay interception
+    for sel in ['button[type="submit"]', 'input[type="submit"]', 'button.login-button', 'button.login']:
         try:
             btn = driver.find_element(By.CSS_SELECTOR, sel)
-            btn.click()
+            try:
+                btn.click()
+            except (ElementNotInteractableException, ElementClickInterceptedException):
+                driver.execute_script("arguments[0].click();", btn)
             break
         except NoSuchElementException:
             continue
