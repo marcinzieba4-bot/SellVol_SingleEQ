@@ -35,6 +35,7 @@ Output:
 import os
 import sys
 import json
+import math
 import time
 import argparse
 import tempfile
@@ -46,7 +47,6 @@ from pathlib import Path
 from selenium import webdriver
 from selenium.webdriver.chrome.options import Options
 from selenium.webdriver.common.by import By
-from selenium.webdriver.common.keys import Keys
 from selenium.webdriver.support.ui import WebDriverWait, Select
 from selenium.webdriver.support import expected_conditions as EC
 from selenium.common.exceptions import (
@@ -63,7 +63,6 @@ from fetch_options_barchart import (
     extract_atm_put,
     _dismiss_cmp_overlay,
     _third_friday,
-    select_expiry,
 )
 
 # ---------------------------------------------------------------------------
@@ -177,180 +176,111 @@ def _wait_for_download(download_dir: Path, timeout: int = 30) -> Path | None:
 
 
 # ---------------------------------------------------------------------------
-# Download one historical options chain from Barchart
+# Historical option price lookup via Barchart's price-history endpoint
 # ---------------------------------------------------------------------------
 
-def _click_download_button(driver: webdriver.Chrome, download_dir: Path, timeout: int = 15) -> Path | None:
-    """Click Barchart's Download toolbar button and wait for the CSV."""
-    def _click_el(el) -> bool:
-        try:
-            el.click()
-            return True
-        except Exception:
-            pass
-        try:
-            driver.execute_script("arguments[0].click();", el)
-            return True
-        except Exception:
-            return False
-
-    _dismiss_cmp_overlay(driver)
-
-    for sel in [
-        'a.toolbar-button.download', 'a[data-bc-download-button]',
-        'button#download', 'button.download', 'a#download', 'a.download',
-        'button[class*="download"]', 'a[class*="download"]', 'a[href*="download"]',
-    ]:
-        for el in driver.find_elements(By.CSS_SELECTOR, sel):
-            if _click_el(el):
-                result = _wait_for_download(download_dir, timeout=timeout)
-                if result and result.stat().st_size > 200:
-                    return result
-                break
-
-    for el in driver.find_elements(By.XPATH, '//*[contains(text(),"Download")]'):
-        if _click_el(el):
-            result = _wait_for_download(download_dir, timeout=timeout)
-            if result and result.stat().st_size > 200:
-                return result
-            break
-
-    return None
+_JS_FETCH = """
+    var done = arguments[arguments.length - 1];
+    var url  = arguments[0];
+    var m    = document.cookie.match(/XSRF-TOKEN=([^;]+)/);
+    var xsrf = m ? decodeURIComponent(m[1]) : '';
+    fetch(url, {
+        credentials: 'include',
+        headers: {'Accept': 'application/json', 'X-XSRF-TOKEN': xsrf}
+    })
+    .then(function(r) { return r.json(); })
+    .then(function(d) { done(JSON.stringify(d)); })
+    .catch(function(e) { done(null); });
+"""
 
 
-def _set_trade_date_ui(driver: webdriver.Chrome, obs_date: date) -> bool:
+def _bc_fetch(driver: webdriver.Chrome, url: str) -> dict | None:
+    """Run a credentialed GET inside the browser and return parsed JSON."""
+    try:
+        driver.set_script_timeout(20)
+        raw = driver.execute_async_script(_JS_FETCH, url)
+        return json.loads(raw) if raw else None
+    except Exception as e:
+        print(f"\n    [diag] fetch error: {e}")
+        return None
+
+
+def _build_occ(ticker: str, expiry: date, strike: float) -> str:
     """
-    Type the historical trade date into Barchart's date-picker input.
-
-    Barchart's Angular options page has a "Trade Date" input that loads
-    historical option prices when filled.  Direct URL parameters like
-    ?tradeDate=... are silently ignored by the Angular router, so we must
-    interact with this input element directly.
-
-    Returns True if an input was found and filled.
+    Build a standard OCC option symbol for a put.
+    Format: TICKER + YYMMDD + P + 8-digit-strike*1000
+    e.g.  AAPL170721P00142000  (AAPL $142 put expiring 2017-07-21)
     """
-    _dismiss_cmp_overlay(driver)
-    obs_str = obs_date.strftime("%m/%d/%Y")   # US format expected by Barchart
-
-    date_selectors = [
-        'input[data-ng-model*="radeDate"]',
-        'input[data-ng-model*="rade_date"]',
-        'input[placeholder*="Trade Date"]',
-        'input[placeholder*="trade date"]',
-        'input[placeholder*="Historical"]',
-        'input[name*="tradeDate"]',
-        'input[name*="trade"]',
-        '#tradeDate',
-        '[class*="trade-date"] input',
-        '[class*="tradeDate"] input',
-    ]
-    for sel in date_selectors:
-        for el in driver.find_elements(By.CSS_SELECTOR, sel):
-            try:
-                driver.execute_script("arguments[0].click();", el)
-                time.sleep(0.3)
-                el.send_keys(Keys.CONTROL + 'a')
-                el.send_keys(obs_str)
-                time.sleep(0.3)
-                el.send_keys(Keys.RETURN)
-                time.sleep(2.5)   # let Angular reload the expiry list
-                return True
-            except Exception:
-                continue
-    return False
+    return f"{ticker}{expiry.strftime('%y%m%d')}P{int(round(strike * 1000)):08d}"
 
 
-def _api_fetch(
+def _candidate_strikes(price: float, n: int = 15) -> list[float]:
+    """
+    Return up to n put strikes closest to price, covering all common
+    increment conventions ($0.50, $1, $2.50, $5, $10).
+    """
+    seen: set[float] = set()
+    out: list[float] = []
+    for step in [1.0, 2.5, 5.0, 0.5, 10.0]:
+        base = math.floor(price / step) * step
+        for k in range(-8, 9):
+            s = round(base + k * step, 2)
+            if s > 0 and s not in seen:
+                seen.add(s)
+                out.append(s)
+    return sorted(out, key=lambda s: abs(s - price))[:n]
+
+
+def _fetch_option_price(
     driver: webdriver.Chrome,
-    download_dir: Path,
     ticker: str,
     expiry: date,
-    observation_date: date | None = None,
-) -> Path | None:
+    strike: float,
+    obs_date: date,
+) -> dict | None:
     """
-    Fetch historical option chain from Barchart's internal JSON API.
+    Fetch OHLC history for one specific put option on obs_date using
+    Barchart's price-history API (the same data shown on
+    barchart.com/options/price-history?symbol=...&expirationDate=...&
+    symbolType=P&strikePrice=...).
 
-    Uses the browser's own fetch() via execute_async_script so the request
-    inherits the full authenticated session (cookies + XSRF token) without
-    any manual extraction — avoids the 401 that occurs when copying cookies
-    into a separate requests.Session.
-
-    observation_date=None → settlement prices (no tradeDate filter).
-    Returns a Path to a saved CSV, or None on failure.
+    Returns a dict with keys like 'open','high','low','close','volume',
+    'openInterest', or None if no data exists for this contract/date.
     """
-    params: dict = {
-        'symbol':     ticker,
-        'expiration': expiry.isoformat(),
-        'type':       'put',
-        'moneyness':  'allRows',
-        'raw':        '1',
-        'fields':     'symbol,strikePrice,bid,ask,lastPrice,volume,'
-                      'openInterest,volatility,delta,gamma,theta,vega',
-        'page':       '1',
-        'limit':      '2000',
-    }
-    if observation_date is not None:
-        params['tradeDate'] = observation_date.isoformat()
+    # Strategy A: historical/get with OCC symbol
+    occ = _build_occ(ticker, expiry, strike)
+    url = (
+        f"/proxies/core-api/v1/historical/get"
+        f"?symbol={occ}"
+        f"&startDate={obs_date.isoformat()}"
+        f"&endDate={obs_date.isoformat()}"
+        f"&type=daily&raw=1"
+        f"&fields=tradeTime,open,high,low,close,volume,openInterest,impliedVolatility"
+    )
+    data = _bc_fetch(driver, url)
+    if data and data.get('data'):
+        rows = data['data']
+        if rows:
+            return rows[0].get('raw', rows[0])
 
-    qs  = '&'.join(f"{k}={v}" for k, v in params.items())
-    url = f'/proxies/core-api/v1/options/chain.json?{qs}'
+    # Strategy B: price-history endpoint with separate params
+    url2 = (
+        f"/proxies/core-api/v1/options/historical.json"
+        f"?symbol={ticker}"
+        f"&expirationDate={expiry.isoformat()}"
+        f"&symbolType=P"
+        f"&strikePrice={strike:.2f}"
+        f"&startDate={obs_date.isoformat()}"
+        f"&endDate={obs_date.isoformat()}"
+        f"&raw=1"
+    )
+    data2 = _bc_fetch(driver, url2)
+    if data2 and data2.get('data'):
+        rows2 = data2['data']
+        if rows2:
+            return rows2[0].get('raw', rows2[0])
 
-    try:
-        driver.set_script_timeout(30)
-        # Use the browser's fetch() — inherits cookies/XSRF automatically.
-        # execute_async_script passes a done() callback as the last argument.
-        result_json = driver.execute_async_script("""
-            var done = arguments[arguments.length - 1];
-            var url  = arguments[0];
-            var m    = document.cookie.match(/XSRF-TOKEN=([^;]+)/);
-            var xsrf = m ? decodeURIComponent(m[1]) : '';
-            fetch(url, {
-                credentials: 'include',
-                headers: {'Accept': 'application/json', 'X-XSRF-TOKEN': xsrf}
-            })
-            .then(function(r) { return r.json(); })
-            .then(function(d) { done(JSON.stringify(d)); })
-            .catch(function(e) { done(null); });
-        """, url)
-
-        if not result_json:
-            print("\n    [diag] API fetch returned null (network error or 401)")
-            return None
-
-        data = json.loads(result_json)
-        rows = data.get('data', [])
-        if not rows:
-            print(f"\n    [diag] API OK but no rows. keys={list(data.keys())}")
-            return None
-
-        records = [item.get('raw', item) for item in rows]
-        df = pd.DataFrame(records)
-        if df.empty:
-            return None
-
-        df.rename(columns={
-            'strikePrice':  'Strike',
-            'bid':          'Bid',
-            'ask':          'Ask',
-            'lastPrice':    'Last',
-            'volatility':   'IV',
-            'delta':        'Delta',
-            'gamma':        'Gamma',
-            'theta':        'Theta',
-            'vega':         'Vega',
-            'openInterest': 'Open Interest',
-            'volume':       'Volume',
-            'symbol':       'Symbol',
-        }, inplace=True)
-
-        tag = observation_date.isoformat() if observation_date else "settlement"
-        out = download_dir / f'{ticker}_{expiry}_{tag}_api.csv'
-        df.to_csv(out, index=False)
-        return out
-
-    except Exception as e:
-        print(f"\n    [diag] API exception: {e}")
-        return None
+    return None
 
 
 def download_historical_chain(
@@ -359,76 +289,55 @@ def download_historical_chain(
     ticker: str,
     expiry: date,
     observation_date: date,
+    stock_price: float,
 ) -> tuple[Path | None, str]:
     """
-    Download the historical put chain for (ticker, expiry) as of observation_date.
+    Find the ATM put for (ticker, expiry) as of observation_date and return
+    its closing price on that date.
 
-    Barchart's Angular router ignores ?expiration=historical-date in the URL
-    and replaces it with the current week's expiry, so direct URL navigation
-    never works for historical data.
+    Iterates over candidate strikes (sorted by distance from stock_price)
+    and calls Barchart's option price-history API for each until one returns
+    data.  Uses the browser's own fetch() so the authenticated session is
+    inherited automatically.
 
-    Three strategies tried in order:
-      1. UI date-picker  — navigate to base options page, type observation_date
-                           into Barchart's Trade Date input, select expiry from
-                           the reloaded dropdown, click Download.
-      2. JSON API        — call Barchart's internal /proxies/core-api endpoint
-                           with the authenticated session cookies; returns a
-                           JSON payload that we convert to CSV.
-      3. Settlement API  — same API call without tradeDate; gives prices as of
-                           the last trading session before expiry.
+    Returns (csv_path, "entry_snapshot") or (None, "failed").
     """
-    base_page = OPTIONS_PAGE.format(symbol=ticker)
-
-    # ------------------------------------------------------------------
-    # Strategy 1: UI date-picker → expiry selection → Download button
-    # ------------------------------------------------------------------
-    for f in download_dir.glob("*.csv"):
-        f.unlink()
-
-    driver.get(base_page)
-    time.sleep(3)
-
-    date_set = _set_trade_date_ui(driver, observation_date)
-    if date_set:
-        select_expiry(driver, expiry)
+    # Ensure we are on a barchart.com page so relative fetch() URLs work
+    if 'barchart.com' not in driver.current_url:
+        driver.get(OPTIONS_PAGE.format(symbol=ticker))
         time.sleep(2)
-        result = _click_download_button(driver, download_dir, timeout=15)
-        if result:
-            return result, "entry_snapshot"
-        print("\n    [diag] UI date-picker found but download button produced no file")
-    else:
-        print("\n    [diag] Trade-date input not found on page — trying API")
 
-    # ------------------------------------------------------------------
-    # Strategy 2: Barchart JSON API with tradeDate (entry snapshot)
-    # ------------------------------------------------------------------
     for f in download_dir.glob("*.csv"):
         f.unlink()
 
-    result = _api_fetch(driver, download_dir, ticker, expiry, observation_date)
-    if result:
-        return result, "entry_snapshot"
+    candidates = _candidate_strikes(stock_price)
 
-    # ------------------------------------------------------------------
-    # Strategy 3: Barchart JSON API without tradeDate (settlement)
-    # ------------------------------------------------------------------
-    for f in download_dir.glob("*.csv"):
-        f.unlink()
+    for strike in candidates:
+        row = _fetch_option_price(driver, ticker, expiry, strike, observation_date)
+        if not row:
+            continue
 
-    result = _api_fetch(driver, download_dir, ticker, expiry, observation_date=None)
-    if result:
-        return result, "settlement"
+        occ = _build_occ(ticker, expiry, strike)
+        df = pd.DataFrame([{
+            'Symbol':        occ,
+            'Strike':        strike,
+            'Last':          row.get('close') or row.get('lastPrice'),
+            'Open':          row.get('open'),
+            'High':          row.get('high'),
+            'Low':           row.get('low'),
+            'Volume':        row.get('volume'),
+            'Open Interest': row.get('openInterest'),
+            'IV':            row.get('impliedVolatility') or row.get('volatility'),
+        }])
+        out = download_dir / f'{ticker}_{expiry}_{observation_date}_hist.csv'
+        df.to_csv(out, index=False)
+        return out, "entry_snapshot"
 
-    # Final diagnostics
-    print(f"\n    [diag] all strategies failed | page: {driver.current_url[:80]}")
-    try:
-        snippet = driver.execute_script(
-            "return (document.body.innerText || '').substring(0, 300)"
-        )
-        print(f"    [diag] page text: {snippet[:200].strip()}")
-    except Exception:
-        pass
-
+    print(
+        f"\n    [diag] no price history for {ticker} {expiry} "
+        f"near ${stock_price:.2f} on {observation_date} "
+        f"(tried {len(candidates)} strikes)"
+    )
     return None, "failed"
 
 
@@ -460,7 +369,7 @@ def process_month(
 
     # 2. Download chain
     csv_path, source = download_historical_chain(
-        driver, download_dir, ticker, expiry, observation_date
+        driver, download_dir, ticker, expiry, observation_date, price
     )
     if csv_path is None:
         print("FAILED (no download)")
