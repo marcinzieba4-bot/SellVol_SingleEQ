@@ -206,6 +206,15 @@ def _bc_fetch(driver: webdriver.Chrome, url: str) -> dict | None:
         return None
 
 
+def _build_bc_symbol(ticker: str, expiry: date, strike: float) -> str:
+    """
+    Barchart's own pipe-delimited option symbol (confirmed from XHR intercept).
+    Format: TICKER|YYYYMMDD|STRIKE.XXP
+    e.g.  AAPL|20201002|130.50P
+    """
+    return f"{ticker}|{expiry.strftime('%Y%m%d')}|{strike:.2f}P"
+
+
 def _build_occ(ticker: str, expiry: date, strike: float) -> str:
     """
     Build a standard OCC option symbol for a put.
@@ -244,12 +253,22 @@ def _fetch_option_price_api(
     Try multiple Barchart API endpoints for one specific put contract.
     Returns an OHLC dict or None.  Set diag=True to print raw responses.
     """
-    occ = _build_occ(ticker, expiry, strike)
+    bc_sym = _build_bc_symbol(ticker, expiry, strike)
+    occ    = _build_occ(ticker, expiry, strike)
 
-    # Use a 5-day window so minor calendar offsets don't miss the row
+    # Use a small window around obs_date so minor calendar offsets don't miss the row
     d0 = (obs_date - timedelta(days=3)).isoformat()
     d1 = (obs_date + timedelta(days=1)).isoformat()
-    obs_str = obs_date.isoformat()
+    obs_str = obs_date.isoformat()   # "2020-09-01"
+
+    # Barchart returns dates as "m/d/Y" (e.g. "9/1/2020") — build a match set
+    obs_date_variants = {
+        obs_str,
+        obs_date.strftime('%m/%d/%Y'),              # "09/01/2020"
+        f"{obs_date.month}/{obs_date.day}/{obs_date.year}",  # "9/1/2020"
+        obs_date.strftime('%m/%d/%y'),              # "09/01/20"
+        f"{obs_date.month}/{obs_date.day}/{obs_date.year % 100:02d}",  # "9/1/20"
+    }
 
     def _rows_for_date(data: dict | None) -> dict | None:
         if not data or data.get('error'):
@@ -258,31 +277,35 @@ def _fetch_option_price_api(
         for r in rows:
             raw = r.get('raw', r)
             trade_time = str(raw.get('tradeTime', raw.get('date', '')))
-            # Barchart dates come back as "YYYY-MM-DD" or "MM/DD/YY"
-            if obs_str in trade_time or obs_date.strftime('%m/%d/%y') in trade_time:
+            if any(v in trade_time for v in obs_date_variants):
                 return raw
-        # If only one row returned and we asked for a narrow range, accept it
+        # Narrow window returned exactly one row — accept it
         if len(rows) == 1:
             return rows[0].get('raw', rows[0])
         return None
 
+    # Correct field names confirmed from XHR intercept:
+    #   openPrice, highPrice, lowPrice, lastPrice  (NOT open/high/low/close)
+    bc_fields = "tradeTime,openPrice,highPrice,lowPrice,lastPrice,volume,openInterest"
+
     endpoints = [
-        # A — OCC symbol with historical/get (standard stock-history endpoint)
+        # PRIMARY — Barchart's actual pipe-symbol format (confirmed from XHR)
         (f"/proxies/core-api/v1/historical/get"
-         f"?symbol={occ}&startDate={d0}&endDate={d1}&type=daily&raw=1"
-         f"&fields=tradeTime,open,high,low,close,volume,openInterest,impliedVolatility"),
-        # B — space-padded OCC (OSI canonical form, 6-char root)
+         f"?symbol={bc_sym}&startDate={d0}&endDate={d1}&raw=1"
+         f"&fields={bc_fields}"),
+        # A — OCC symbol (compact, no spaces)
+        (f"/proxies/core-api/v1/historical/get"
+         f"?symbol={occ}&startDate={d0}&endDate={d1}&raw=1"
+         f"&fields={bc_fields}"),
+        # B — space-padded OCC (OSI 6-char root form)
         (f"/proxies/core-api/v1/historical/get"
          f"?symbol={ticker:<6s}{expiry.strftime('%y%m%d')}P{int(round(strike*1000)):08d}"
-         f"&startDate={d0}&endDate={d1}&type=daily&raw=1"),
+         f"&startDate={d0}&endDate={d1}&raw=1&fields={bc_fields}"),
         # C — options-specific historical endpoint with separate params
         (f"/proxies/core-api/v1/options/historical.json"
          f"?symbol={ticker}&expirationDate={expiry.isoformat()}"
          f"&symbolType=P&strikePrice={strike:.2f}"
          f"&startDate={d0}&endDate={d1}&raw=1"),
-        # D — getHistory (older Barchart API)
-        (f"/proxies/core-api/v1/getHistory.json"
-         f"?symbol={occ}&startDate={d0}&endDate={d1}&type=daily"),
     ]
 
     for i, url in enumerate(endpoints):
@@ -351,11 +374,13 @@ def _scrape_price_history_page(
     except Exception:
         pass
 
-    # Date variants Barchart might display
+    # Date variants Barchart might display (no %-m — not portable on Windows)
     obs_variants = {
         obs_date.strftime('%m/%d/%y'),    # 09/01/20
-        obs_date.strftime('%-m/%-d/%y'),  # 9/1/20
+        obs_date.strftime('%m/%d/%Y'),    # 09/01/2020
         obs_date.isoformat(),             # 2020-09-01
+        f"{obs_date.month}/{obs_date.day}/{obs_date.year % 100:02d}",  # 9/1/20
+        f"{obs_date.month}/{obs_date.day}/{obs_date.year}",            # 9/1/2020
     }
 
     # Scrape all table rows, find the one matching obs_date
@@ -428,13 +453,14 @@ def download_historical_chain(
 
     def _save(strike: float, row: dict) -> tuple[Path, str]:
         occ = _build_occ(ticker, expiry, strike)
+        # Accept both naming conventions (Barchart XHR uses *Price suffixes)
         df = pd.DataFrame([{
             'Symbol':        occ,
             'Strike':        strike,
-            'Last':          row.get('close') or row.get('lastPrice'),
-            'Open':          row.get('open'),
-            'High':          row.get('high'),
-            'Low':           row.get('low'),
+            'Last':          row.get('lastPrice') or row.get('close') or row.get('last'),
+            'Open':          row.get('openPrice') or row.get('open'),
+            'High':          row.get('highPrice') or row.get('high'),
+            'Low':           row.get('lowPrice')  or row.get('low'),
             'Volume':        row.get('volume'),
             'Open Interest': row.get('openInterest'),
             'IV':            row.get('impliedVolatility') or row.get('volatility'),
