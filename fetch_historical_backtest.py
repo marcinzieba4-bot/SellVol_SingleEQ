@@ -41,7 +41,7 @@ import argparse
 import tempfile
 import pandas as pd
 import yfinance as yf
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta
 from pathlib import Path
 
 from selenium import webdriver
