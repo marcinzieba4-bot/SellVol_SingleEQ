@@ -395,6 +395,10 @@ def print_results(ticker: str, results: list[dict], mode: str = "sell_put") -> N
 # ── Main ──────────────────────────────────────────────────────────────────────
 
 if __name__ == "__main__":
-    for ticker in ["AAPL", "AMZN"]:
-        results = run_strategy(ticker, mode="buy_call")
-        print_results(ticker, results, mode="buy_call")
+    import sys
+    tickers = sys.argv[1:] if len(sys.argv) > 1 else ["AAPL", "AMZN", "TSLA"]
+    modes   = ["sell_put", "buy_call"]
+    for ticker in tickers:
+        for mode in modes:
+            results = run_strategy(ticker, mode=mode)
+            print_results(ticker, results, mode=mode)
