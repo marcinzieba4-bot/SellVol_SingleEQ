@@ -232,54 +232,167 @@ def _candidate_strikes(price: float, n: int = 15) -> list[float]:
     return sorted(out, key=lambda s: abs(s - price))[:n]
 
 
-def _fetch_option_price(
+def _fetch_option_price_api(
     driver: webdriver.Chrome,
     ticker: str,
     expiry: date,
     strike: float,
     obs_date: date,
+    diag: bool = False,
 ) -> dict | None:
     """
-    Fetch OHLC history for one specific put option on obs_date using
-    Barchart's price-history API (the same data shown on
-    barchart.com/options/price-history?symbol=...&expirationDate=...&
-    symbolType=P&strikePrice=...).
-
-    Returns a dict with keys like 'open','high','low','close','volume',
-    'openInterest', or None if no data exists for this contract/date.
+    Try multiple Barchart API endpoints for one specific put contract.
+    Returns an OHLC dict or None.  Set diag=True to print raw responses.
     """
-    # Strategy A: historical/get with OCC symbol
     occ = _build_occ(ticker, expiry, strike)
-    url = (
-        f"/proxies/core-api/v1/historical/get"
-        f"?symbol={occ}"
-        f"&startDate={obs_date.isoformat()}"
-        f"&endDate={obs_date.isoformat()}"
-        f"&type=daily&raw=1"
-        f"&fields=tradeTime,open,high,low,close,volume,openInterest,impliedVolatility"
-    )
-    data = _bc_fetch(driver, url)
-    if data and data.get('data'):
-        rows = data['data']
-        if rows:
-            return rows[0].get('raw', rows[0])
 
-    # Strategy B: price-history endpoint with separate params
-    url2 = (
-        f"/proxies/core-api/v1/options/historical.json"
+    # Use a 5-day window so minor calendar offsets don't miss the row
+    d0 = (obs_date - timedelta(days=3)).isoformat()
+    d1 = (obs_date + timedelta(days=1)).isoformat()
+    obs_str = obs_date.isoformat()
+
+    def _rows_for_date(data: dict | None) -> dict | None:
+        if not data or data.get('error'):
+            return None
+        rows = data.get('data', [])
+        for r in rows:
+            raw = r.get('raw', r)
+            trade_time = str(raw.get('tradeTime', raw.get('date', '')))
+            # Barchart dates come back as "YYYY-MM-DD" or "MM/DD/YY"
+            if obs_str in trade_time or obs_date.strftime('%m/%d/%y') in trade_time:
+                return raw
+        # If only one row returned and we asked for a narrow range, accept it
+        if len(rows) == 1:
+            return rows[0].get('raw', rows[0])
+        return None
+
+    endpoints = [
+        # A — OCC symbol with historical/get (standard stock-history endpoint)
+        (f"/proxies/core-api/v1/historical/get"
+         f"?symbol={occ}&startDate={d0}&endDate={d1}&type=daily&raw=1"
+         f"&fields=tradeTime,open,high,low,close,volume,openInterest,impliedVolatility"),
+        # B — space-padded OCC (OSI canonical form, 6-char root)
+        (f"/proxies/core-api/v1/historical/get"
+         f"?symbol={ticker:<6s}{expiry.strftime('%y%m%d')}P{int(round(strike*1000)):08d}"
+         f"&startDate={d0}&endDate={d1}&type=daily&raw=1"),
+        # C — options-specific historical endpoint with separate params
+        (f"/proxies/core-api/v1/options/historical.json"
+         f"?symbol={ticker}&expirationDate={expiry.isoformat()}"
+         f"&symbolType=P&strikePrice={strike:.2f}"
+         f"&startDate={d0}&endDate={d1}&raw=1"),
+        # D — getHistory (older Barchart API)
+        (f"/proxies/core-api/v1/getHistory.json"
+         f"?symbol={occ}&startDate={d0}&endDate={d1}&type=daily"),
+    ]
+
+    for i, url in enumerate(endpoints):
+        data = _bc_fetch(driver, url)
+        if diag:
+            preview = str(data)[:180] if data else 'None'
+            print(f"\n    [diag-{chr(65+i)}] {url[url.find('?')-20:url.find('?')+60]}... → {preview}")
+        row = _rows_for_date(data)
+        if row:
+            return row
+
+    return None
+
+
+def _scrape_price_history_page(
+    driver: webdriver.Chrome,
+    ticker: str,
+    expiry: date,
+    strike: float,
+    obs_date: date,
+    download_dir: Path,
+) -> dict | None:
+    """
+    Navigate to Barchart's price-history page for a specific put contract
+    and extract the OHLC row for obs_date by scraping the rendered table.
+
+    This is the guaranteed fallback — the page the user confirmed shows
+    historical data at:
+      barchart.com/options/price-history?symbol=AAPL&expirationDate=...
+      &symbolType=P&strikePrice=130.00
+    """
+    page_url = (
+        f"https://www.barchart.com/options/price-history"
         f"?symbol={ticker}"
         f"&expirationDate={expiry.isoformat()}"
         f"&symbolType=P"
         f"&strikePrice={strike:.2f}"
-        f"&startDate={obs_date.isoformat()}"
-        f"&endDate={obs_date.isoformat()}"
-        f"&raw=1"
     )
-    data2 = _bc_fetch(driver, url2)
-    if data2 and data2.get('data'):
-        rows2 = data2['data']
-        if rows2:
-            return rows2[0].get('raw', rows2[0])
+    driver.get(page_url)
+    _dismiss_cmp_overlay(driver)
+
+    # Wait for the data table to appear (up to 8 s)
+    for _ in range(16):
+        time.sleep(0.5)
+        try:
+            tbl = driver.find_element(By.CSS_SELECTOR, 'table')
+            if tbl:
+                break
+        except Exception:
+            pass
+
+    # Try to intercept the XHR Barchart made while loading the page
+    # (captures whatever API endpoint it actually uses)
+    try:
+        xhrdata = driver.execute_script("""
+            var entries = performance.getEntriesByType('resource');
+            for (var e of entries) {
+                if (e.name.includes('proxies') || e.name.includes('historical')) {
+                    return e.name;
+                }
+            }
+            return null;
+        """)
+        if xhrdata:
+            print(f"\n    [diag-page-xhr] {xhrdata[:200]}")
+    except Exception:
+        pass
+
+    # Date variants Barchart might display
+    obs_variants = {
+        obs_date.strftime('%m/%d/%y'),    # 09/01/20
+        obs_date.strftime('%-m/%-d/%y'),  # 9/1/20
+        obs_date.isoformat(),             # 2020-09-01
+    }
+
+    # Scrape all table rows, find the one matching obs_date
+    try:
+        raw_rows = driver.execute_script("""
+            var result = [];
+            var rows = document.querySelectorAll('table tr');
+            for (var r of rows) {
+                var cells = r.querySelectorAll('td');
+                if (cells.length >= 4) {
+                    result.push(Array.from(cells).map(function(c){return c.textContent.trim();}));
+                }
+            }
+            return result;
+        """)
+        if raw_rows:
+            for row in raw_rows:
+                if any(v in row[0] for v in obs_variants):
+                    # Typical column order: Date, Open, High, Low, Last, Volume, OI
+                    def _f(x):
+                        try:
+                            return float(str(x).replace(',', ''))
+                        except Exception:
+                            return None
+                    return {
+                        'close':         _f(row[4]) if len(row) > 4 else _f(row[-1]),
+                        'open':          _f(row[1]) if len(row) > 1 else None,
+                        'high':          _f(row[2]) if len(row) > 2 else None,
+                        'low':           _f(row[3]) if len(row) > 3 else None,
+                        'volume':        _f(row[5]) if len(row) > 5 else None,
+                        'openInterest':  _f(row[6]) if len(row) > 6 else None,
+                    }
+            # If date not found, log the first few rows so we can see the format
+            print(f"\n    [diag-page] table has {len(raw_rows)} rows; "
+                  f"first row[0]={raw_rows[0][0]!r} (looking for {obs_variants})")
+    except Exception as e:
+        print(f"\n    [diag-page] scrape error: {e}")
 
     return None
 
@@ -296,10 +409,10 @@ def download_historical_chain(
     Find the ATM put for (ticker, expiry) as of observation_date and return
     its closing price on that date.
 
-    Iterates over candidate strikes (sorted by distance from stock_price)
-    and calls Barchart's option price-history API for each until one returns
-    data.  Uses the browser's own fetch() so the authenticated session is
-    inherited automatically.
+    Phase 1 (fast): try multiple Barchart API endpoints for each candidate
+                    strike — no page navigation required.
+    Phase 2 (slow): navigate to the actual price-history page and scrape
+                    the rendered table for the top-5 closest strikes.
 
     Returns (csv_path, "entry_snapshot") or (None, "failed").
     """
@@ -313,11 +426,7 @@ def download_historical_chain(
 
     candidates = _candidate_strikes(stock_price)
 
-    for strike in candidates:
-        row = _fetch_option_price(driver, ticker, expiry, strike, observation_date)
-        if not row:
-            continue
-
+    def _save(strike: float, row: dict) -> tuple[Path, str]:
         occ = _build_occ(ticker, expiry, strike)
         df = pd.DataFrame([{
             'Symbol':        occ,
@@ -334,11 +443,24 @@ def download_historical_chain(
         df.to_csv(out, index=False)
         return out, "entry_snapshot"
 
-    print(
-        f"\n    [diag] no price history for {ticker} {expiry} "
-        f"near ${stock_price:.2f} on {observation_date} "
-        f"(tried {len(candidates)} strikes)"
-    )
+    # ── Phase 1: API (fast, no navigation) ──────────────────────────────
+    for i, strike in enumerate(candidates):
+        # Print full diagnostics only for the single closest candidate
+        row = _fetch_option_price_api(
+            driver, ticker, expiry, strike, observation_date, diag=(i == 0)
+        )
+        if row:
+            return _save(strike, row)
+
+    # ── Phase 2: page scrape (guaranteed if page has data) ───────────────
+    print(f"\n    [diag] Phase-1 API failed — scraping price-history page")
+    for strike in candidates[:5]:
+        row = _scrape_price_history_page(
+            driver, ticker, expiry, strike, observation_date, download_dir
+        )
+        if row:
+            return _save(strike, row)
+
     return None, "failed"
 
 
