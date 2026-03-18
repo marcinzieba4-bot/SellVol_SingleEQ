@@ -1,13 +1,13 @@
 """
 fetch_historical_backtest.py
 
-Build a monthly ATM-put history for a single ticker from 2017-06-01 to today.
+Build a monthly ATM-put history for a single ticker from 2020-09-01 to today.
 
 For each month:
   observation_date = first business day of that month
   stock_price      = closing price on observation_date  (yfinance)
-  target_expiry    = standard monthly expiry ~30-35 DTE from observation_date
-                     (3rd Friday of the following month)
+  target_expiry    = nearest Friday with >= 25 DTE from observation_date
+                     (covers weekly and standard monthly expiries)
   ATM strike       = option strike closest to stock_price
   data downloaded  = full put chain from Barchart for that expiry,
                      filtered to the ATM strike row
@@ -77,14 +77,21 @@ DELAY = 2.5  # polite pause between downloads
 # Date helpers
 # ---------------------------------------------------------------------------
 
+def _next_friday(from_date: date, min_dte: int = 25) -> date:
+    """Return the nearest Friday at least min_dte days after from_date."""
+    earliest = from_date + timedelta(days=min_dte)
+    days_ahead = (4 - earliest.weekday()) % 7   # 4 = Friday
+    return earliest + timedelta(days=days_ahead)
+
+
 def _monthly_schedule(start: date, end: date) -> list[tuple[date, date]]:
     """
     Generate non-overlapping (observation_date, target_expiry) pairs.
 
     observation_date = start, then each subsequent obs = first business day
                        after the previous expiry (no overlap between trades)
-    target_expiry    = nearest standard monthly (3rd Friday) with >= 25 DTE
-                       from the observation date
+    target_expiry    = nearest Friday with >= 25 DTE from observation date
+                       (covers both weekly and standard monthly expiries)
     """
     pairs = []
 
@@ -94,13 +101,7 @@ def _monthly_schedule(start: date, end: date) -> list[tuple[date, date]]:
         obs += timedelta(days=1)
 
     while obs <= end:
-        y, m = obs.year, obs.month
-
-        # Find the nearest monthly expiry with >= 25 DTE
-        expiry = _third_friday(y, m)
-        if (expiry - obs).days < 25:
-            ny, nm = (y, m + 1) if m < 12 else (y + 1, 1)
-            expiry = _third_friday(ny, nm)
+        expiry = _next_friday(obs, min_dte=25)
 
         if expiry > end:
             break
@@ -480,7 +481,7 @@ def main():
         description="Download monthly historical ATM put data from Barchart"
     )
     parser.add_argument("--ticker",      default="NVDA",       help="Ticker symbol (default: NVDA)")
-    parser.add_argument("--start",       default="2017-06-01", help="Start date YYYY-MM-DD")
+    parser.add_argument("--start",       default="2020-09-01", help="Start date YYYY-MM-DD")
     parser.add_argument("--end",         default="",           help="End date YYYY-MM-DD (default: today)")
     parser.add_argument("--show-browser", action="store_true", help="Show Chrome window")
     parser.add_argument("--out-dir",     default="historical_options", help="Output directory")
