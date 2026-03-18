@@ -34,6 +34,7 @@ Output:
 
 import os
 import sys
+import json
 import time
 import argparse
 import tempfile
@@ -267,52 +268,56 @@ def _api_fetch(
     observation_date: date | None = None,
 ) -> Path | None:
     """
-    Call Barchart's internal JSON API using the authenticated session cookies
-    already held by the Selenium browser.  This bypasses the Angular router
-    redirect that makes URL-based historical downloads fail.
+    Fetch historical option chain from Barchart's internal JSON API.
+
+    Uses the browser's own fetch() via execute_async_script so the request
+    inherits the full authenticated session (cookies + XSRF token) without
+    any manual extraction — avoids the 401 that occurs when copying cookies
+    into a separate requests.Session.
 
     observation_date=None → settlement prices (no tradeDate filter).
     Returns a Path to a saved CSV, or None on failure.
     """
+    params: dict = {
+        'symbol':     ticker,
+        'expiration': expiry.isoformat(),
+        'type':       'put',
+        'moneyness':  'allRows',
+        'raw':        '1',
+        'fields':     'symbol,strikePrice,bid,ask,lastPrice,volume,'
+                      'openInterest,volatility,delta,gamma,theta,vega',
+        'page':       '1',
+        'limit':      '2000',
+    }
+    if observation_date is not None:
+        params['tradeDate'] = observation_date.isoformat()
+
+    qs  = '&'.join(f"{k}={v}" for k, v in params.items())
+    url = f'/proxies/core-api/v1/options/chain.json?{qs}'
+
     try:
-        import requests as req
+        driver.set_script_timeout(30)
+        # Use the browser's fetch() — inherits cookies/XSRF automatically.
+        # execute_async_script passes a done() callback as the last argument.
+        result_json = driver.execute_async_script("""
+            var done = arguments[arguments.length - 1];
+            var url  = arguments[0];
+            var m    = document.cookie.match(/XSRF-TOKEN=([^;]+)/);
+            var xsrf = m ? decodeURIComponent(m[1]) : '';
+            fetch(url, {
+                credentials: 'include',
+                headers: {'Accept': 'application/json', 'X-XSRF-TOKEN': xsrf}
+            })
+            .then(function(r) { return r.json(); })
+            .then(function(d) { done(JSON.stringify(d)); })
+            .catch(function(e) { done(null); });
+        """, url)
 
-        cookies = {c['name']: c['value'] for c in driver.get_cookies()}
-        xsrf    = cookies.get('XSRF-TOKEN', '')
-
-        headers = {
-            'User-Agent':   'Mozilla/5.0 (Windows NT 10.0; Win64; x64) '
-                            'AppleWebKit/537.36 (KHTML, like Gecko) '
-                            'Chrome/122.0.0.0 Safari/537.36',
-            'Referer':      f'https://www.barchart.com/stocks/quotes/{ticker}/options',
-            'Accept':       'application/json, text/plain, */*',
-            'X-XSRF-TOKEN': xsrf,
-        }
-
-        params: dict = {
-            'symbol':    ticker,
-            'expiration': expiry.isoformat(),
-            'type':      'put',
-            'moneyness': 'allRows',
-            'raw':       '1',
-            'fields':    'symbol,strikePrice,bid,ask,lastPrice,volume,'
-                         'openInterest,volatility,delta,gamma,theta,vega',
-            'page':      '1',
-            'limit':     '2000',
-        }
-        if observation_date is not None:
-            params['tradeDate'] = observation_date.isoformat()
-
-        resp = req.get(
-            'https://www.barchart.com/proxies/core-api/v1/options/chain.json',
-            params=params, cookies=cookies, headers=headers, timeout=30,
-        )
-
-        if resp.status_code != 200:
-            print(f"\n    [diag] API HTTP {resp.status_code}: {resp.text[:120]}")
+        if not result_json:
+            print("\n    [diag] API fetch returned null (network error or 401)")
             return None
 
-        data = resp.json()
+        data = json.loads(result_json)
         rows = data.get('data', [])
         if not rows:
             print(f"\n    [diag] API OK but no rows. keys={list(data.keys())}")
