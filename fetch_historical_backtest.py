@@ -289,8 +289,13 @@ def _fetch_option_price_api(
                 continue
         return None
 
-    def _rows_for_date(data: dict | None) -> dict | None:
-        """Return the valid row whose tradeTime is closest to obs_date (≤ 2 days prior)."""
+    def _rows_for_date(data: dict | None, max_delta: timedelta = timedelta(days=3)) -> dict | None:
+        """Return the valid row whose tradeTime is closest to obs_date (not after it).
+
+        max_delta: maximum allowed distance before obs_date.
+          - Narrow-window calls use the default 3 days (strict).
+          - Wide-window call passes timedelta.max to accept any distance.
+        """
         if not data or data.get('error'):
             return None
         rows = [r.get('raw', r) for r in data.get('data', [])]
@@ -304,14 +309,13 @@ def _fetch_option_price_api(
             if any(v in trade_time for v in obs_date_variants):
                 return raw
 
-        # Second pass: pick the row whose date is closest to obs_date but not after it
-        # (handles weekends, T+1 settlement, and sparse data)
-        best, best_delta = None, timedelta(days=3)  # accept up to 2 trading days back
+        # Second pass: closest valid row on or before obs_date, within max_delta
+        best, best_delta = None, max_delta
         for raw in rows:
             d = _parse_trade_date(raw)
             if d and d <= obs_date:
                 delta = obs_date - d
-                if delta < best_delta:
+                if delta <= best_delta:          # <= so exact boundary distance is accepted
                     best, best_delta = raw, delta
         return best
 
@@ -361,7 +365,7 @@ def _fetch_option_price_api(
     if diag:
         preview = str(wide_data)[:180] if wide_data else 'None'
         print(f"\n    [diag-wide] {wide_url[wide_url.find('?')-20:wide_url.find('?')+60]}... → {preview}")
-    row = _rows_for_date(wide_data)
+    row = _rows_for_date(wide_data, max_delta=timedelta.max)
     if row:
         d_found = _parse_trade_date(row)
         if diag:
