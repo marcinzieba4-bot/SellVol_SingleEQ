@@ -268,9 +268,14 @@ def download_historical_chain(
     driver.get(snap_page)
     time.sleep(3)   # wait for AngularJS to render the historical chain
 
-    result = _click_download_button(driver, download_dir, timeout=15)
-    if result:
-        return result, "entry_snapshot"
+    # Bail early if Barchart redirected to a different expiry
+    # (happens when historical data is unavailable — page silently swaps to current expiry)
+    if expiry_str in driver.current_url:
+        result = _click_download_button(driver, download_dir, timeout=15)
+        if result:
+            return result, "entry_snapshot"
+    else:
+        print(f"\n    [diag] snap redirect: {driver.current_url[:90]}")
 
     # ------------------------------------------------------------------
     # Strategy 2: settlement / last-traded (no tradeDate filter)
@@ -282,9 +287,12 @@ def download_historical_chain(
     driver.get(plain_page)
     time.sleep(3)
 
-    result = _click_download_button(driver, download_dir, timeout=15)
-    if result:
-        return result, "settlement"
+    if expiry_str in driver.current_url:
+        result = _click_download_button(driver, download_dir, timeout=15)
+        if result:
+            return result, "settlement"
+    else:
+        print(f"\n    [diag] plain redirect: {driver.current_url[:90]}")
 
     # Diagnostics
     print(f"\n    [diag] snap page  : {snap_page}")
@@ -344,7 +352,26 @@ def process_month(
         return None
 
     row = atm.iloc[0].to_dict()
-    cols = [c.lower() for c in atm.columns]
+
+    # ------------------------------------------------------------------
+    # Validate the CSV is for the right ticker + expiry.
+    # Barchart option symbols are OCC-format: TICKER+YYMMDD+P+strike
+    # e.g. AAPL170721P00140000  →  expiry 2017-07-21, put, strike $140
+    # If the symbol shows a different date (redirect gave us wrong data),
+    # discard the row entirely.
+    # ------------------------------------------------------------------
+    sym_col = next((c for c in atm.columns
+                    if c.lower() in ("symbol", "contract", "option_symbol")), None)
+    if sym_col:
+        sym_val  = str(atm.iloc[0].get(sym_col, ""))
+        exp_ymd  = expiry.strftime("%y%m%d")          # "170721"
+        tkr_up   = ticker.upper()
+        if exp_ymd not in sym_val:
+            print(f"INVALID(symbol={sym_val!r} ≠ expiry {exp_ymd}) — skipping")
+            return None
+        if tkr_up not in sym_val.upper():
+            print(f"INVALID(symbol={sym_val!r} ≠ ticker {tkr_up}) — skipping")
+            return None
 
     # ------------------------------------------------------------------
     # 4a. Compute entry_premium = mid(bid, ask) at observation_date.
