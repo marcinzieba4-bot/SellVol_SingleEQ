@@ -270,19 +270,50 @@ def _fetch_option_price_api(
         f"{obs_date.month}/{obs_date.day}/{obs_date.year % 100:02d}",  # "9/1/20"
     }
 
+    def _is_valid_row(raw: dict) -> bool:
+        """Reject Barchart placeholder rows (epoch-zero date or all N/A prices)."""
+        trade_time = str(raw.get('tradeTime', raw.get('date', '')))
+        if '01/01/70' in trade_time or '1970' in trade_time:
+            return False
+        last = raw.get('lastPrice') or raw.get('close') or raw.get('last', '')
+        return str(last).strip() not in ('', 'N/A', 'n/a', 'null', 'None')
+
+    def _parse_trade_date(raw: dict) -> date | None:
+        """Parse Barchart's tradeTime string to a date, or None on failure."""
+        s = str(raw.get('tradeTime', raw.get('date', ''))).strip()
+        for fmt in ('%m/%d/%y %H:%M:%S', '%m/%d/%Y %H:%M:%S',
+                    '%m/%d/%y', '%m/%d/%Y', '%Y-%m-%d'):
+            try:
+                return datetime.strptime(s.split()[0], fmt.split()[0]).date()
+            except ValueError:
+                continue
+        return None
+
     def _rows_for_date(data: dict | None) -> dict | None:
+        """Return the valid row whose tradeTime is closest to obs_date (≤ 2 days prior)."""
         if not data or data.get('error'):
             return None
-        rows = data.get('data', [])
-        for r in rows:
-            raw = r.get('raw', r)
+        rows = [r.get('raw', r) for r in data.get('data', [])]
+        rows = [r for r in rows if _is_valid_row(r)]
+        if not rows:
+            return None
+
+        # First pass: exact match on obs_date
+        for raw in rows:
             trade_time = str(raw.get('tradeTime', raw.get('date', '')))
             if any(v in trade_time for v in obs_date_variants):
                 return raw
-        # Narrow window returned exactly one row — accept it
-        if len(rows) == 1:
-            return rows[0].get('raw', rows[0])
-        return None
+
+        # Second pass: pick the row whose date is closest to obs_date but not after it
+        # (handles weekends, T+1 settlement, and sparse data)
+        best, best_delta = None, timedelta(days=3)  # accept up to 2 trading days back
+        for raw in rows:
+            d = _parse_trade_date(raw)
+            if d and d <= obs_date:
+                delta = obs_date - d
+                if delta < best_delta:
+                    best, best_delta = raw, delta
+        return best
 
     # Correct field names confirmed from XHR intercept:
     #   openPrice, highPrice, lowPrice, lastPrice  (NOT open/high/low/close)
@@ -316,6 +347,26 @@ def _fetch_option_price_api(
         row = _rows_for_date(data)
         if row:
             return row
+
+    # ── Wide-window retry ────────────────────────────────────────────────────
+    # All narrow-window queries returned count:0, total:N — the symbol exists
+    # but Barchart only stored data near expiry (common for 2020–2021 options).
+    # Fetch the full lifetime of the contract and pick the closest valid row.
+    wide_start = (expiry - timedelta(days=90)).isoformat()
+    wide_end   = expiry.isoformat()
+    wide_url   = (f"/proxies/core-api/v1/historical/get"
+                  f"?symbol={bc_sym}&startDate={wide_start}&endDate={wide_end}"
+                  f"&raw=1&fields={bc_fields}")
+    wide_data  = _bc_fetch(driver, wide_url)
+    if diag:
+        preview = str(wide_data)[:180] if wide_data else 'None'
+        print(f"\n    [diag-wide] {wide_url[wide_url.find('?')-20:wide_url.find('?')+60]}... → {preview}")
+    row = _rows_for_date(wide_data)
+    if row:
+        d_found = _parse_trade_date(row)
+        if diag:
+            print(f"    [diag-wide] accepted row dated {d_found} for obs_date {obs_date}")
+        return row
 
     return None
 
