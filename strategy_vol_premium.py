@@ -226,8 +226,10 @@ def detect_scale(ticker: str, s3_price: float, s3_date: str) -> float:
 
 def run_strategy(ticker: str, mode: str = "sell_put") -> list[dict]:
     """
-    mode = 'sell_put' : collect premium, lose on downside (original strategy)
-    mode = 'buy_call' : pay same premium as call price, gain on upside
+    mode = 'sell_put'          : sell put when last 4W positive (momentum)
+    mode = 'buy_call'          : buy call when last 4W positive (momentum)
+    mode = 'sell_call_always'  : sell call every period, no signal filter
+    mode = 'sell_call_negative': sell call only when last 4W was NEGATIVE
     """
     print(f"\nLoading S3 data for {ticker}...")
     real_periods = load_s3_periods(ticker)
@@ -261,14 +263,21 @@ def run_strategy(ticker: str, mode: str = "sell_put") -> list[dict]:
             stock_expiry = get_yahoo_close_on(ticker, to_date(rec["period_end"]),
                                               scale=yahoo_scale)
 
-        # ── 4-week momentum signal ────────────────────────────────────────────
+        # ── Signal ────────────────────────────────────────────────────────────
         if stock_entry and stock_4w_ago:
-            signal = stock_entry > stock_4w_ago
+            up = stock_entry > stock_4w_ago
             chg_pct = (stock_entry / stock_4w_ago - 1) * 100
             signal_detail = f"{stock_4w_ago:.2f}→{stock_entry:.2f} ({chg_pct:+.1f}%)"
         else:
-            signal        = False
+            up            = False
             signal_detail = "n/a (no prev price)"
+
+        if mode == "sell_call_always":
+            signal = stock_entry is not None   # always trade (skip first period)
+        elif mode == "sell_call_negative":
+            signal = (stock_entry is not None and stock_4w_ago is not None and not up)
+        else:  # sell_put / buy_call: trade when last 4W positive
+            signal = up
 
         # ── Premium ───────────────────────────────────────────────────────────
         premium = rec["entry_premium"]
@@ -289,12 +298,15 @@ def run_strategy(ticker: str, mode: str = "sell_put") -> list[dict]:
                 and stock_expiry is not None and strike is not None
                 and stock_entry is not None):
             if mode == "buy_call":
-                # Pay premium; receive call payoff = max(0, expiry - strike)
                 payoff     = max(0.0, stock_expiry - strike)
                 pnl_dollar = payoff - premium
                 trade      = "BUY CALL"
-            else:
-                # Receive premium; pay put intrinsic = max(0, strike - expiry)
+            elif mode in ("sell_call_always", "sell_call_negative"):
+                # Sell call: receive premium, pay call payoff = max(0, expiry - strike)
+                payoff     = max(0.0, stock_expiry - strike)
+                pnl_dollar = premium - payoff
+                trade      = "SELL CALL"
+            else:  # sell_put
                 payoff     = max(0.0, strike - stock_expiry)
                 pnl_dollar = premium - payoff
                 trade      = "SELL PUT"
@@ -336,7 +348,13 @@ def print_results(ticker: str, results: list[dict], mode: str = "sell_put") -> N
         f"{'Prem':>6} {'C':>1} {payoff_lbl:>6} {'PnL $':>8} {'PnL%':>7} {'Cum%':>8}"
     )
 
-    strategy_label = "Buy Call (put premium as call price)" if mode == "buy_call" else "Sell Put"
+    labels = {
+        "sell_put":          "Sell Put  (signal: last 4W positive)",
+        "buy_call":          "Buy Call  (signal: last 4W positive)",
+        "sell_call_always":  "Sell Call (every period, no filter)",
+        "sell_call_negative":"Sell Call (signal: last 4W negative)",
+    }
+    strategy_label = labels.get(mode, mode)
     print(f"\n{'═'*W}")
     print(f"  {ticker} — {strategy_label}  (4-week momentum filter)")
     print(f"{'═'*W}")
@@ -348,7 +366,8 @@ def print_results(ticker: str, results: list[dict], mode: str = "sell_put") -> N
     no_trades    = 0
     total_pnl    = 0.0
     wins = losses = 0
-    active_trade = "BUY CALL" if mode == "buy_call" else "SELL PUT"
+    active_trade = {"sell_put": "SELL PUT", "buy_call": "BUY CALL",
+                    "sell_call_always": "SELL CALL", "sell_call_negative": "SELL CALL"}.get(mode, "SELL PUT")
 
     for r in results:
         cumul += r["pnl_pct"]
