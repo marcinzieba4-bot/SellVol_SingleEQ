@@ -26,6 +26,7 @@ Missing period rule:
   records.
 """
 
+import os
 import boto3
 import csv
 import io
@@ -223,7 +224,11 @@ def detect_scale(ticker: str, s3_price: float, s3_date: str) -> float:
 
 # ── Strategy ──────────────────────────────────────────────────────────────────
 
-def run_strategy(ticker: str) -> list[dict]:
+def run_strategy(ticker: str, mode: str = "sell_put") -> list[dict]:
+    """
+    mode = 'sell_put' : collect premium, lose on downside (original strategy)
+    mode = 'buy_call' : pay same premium as call price, gain on upside
+    """
     print(f"\nLoading S3 data for {ticker}...")
     real_periods = load_s3_periods(ticker)
     print(f"  {len(real_periods)} period files found")
@@ -283,12 +288,19 @@ def run_strategy(ticker: str) -> list[dict]:
         if (signal and premium is not None
                 and stock_expiry is not None and strike is not None
                 and stock_entry is not None):
-            intrinsic  = max(0.0, strike - stock_expiry)
-            pnl_dollar = premium - intrinsic
-            pnl_pct    = pnl_dollar / stock_entry * 100
-            trade      = "SELL PUT"
+            if mode == "buy_call":
+                # Pay premium; receive call payoff = max(0, expiry - strike)
+                payoff     = max(0.0, stock_expiry - strike)
+                pnl_dollar = payoff - premium
+                trade      = "BUY CALL"
+            else:
+                # Receive premium; pay put intrinsic = max(0, strike - expiry)
+                payoff     = max(0.0, strike - stock_expiry)
+                pnl_dollar = premium - payoff
+                trade      = "SELL PUT"
+            pnl_pct = pnl_dollar / stock_entry * 100
         else:
-            intrinsic  = 0.0
+            payoff     = 0.0
             pnl_dollar = 0.0
             pnl_pct    = 0.0
             trade      = "NO TRADE" if not signal else "NO DATA"
@@ -305,7 +317,7 @@ def run_strategy(ticker: str) -> list[dict]:
             "strike":        strike,
             "premium":       round(premium, 2) if premium else None,
             "carried":       carried,
-            "intrinsic":     round(intrinsic, 2),
+            "payoff":        round(payoff, 2),
             "pnl_dollar":    round(pnl_dollar, 2),
             "pnl_pct":       round(pnl_pct, 4),
         })
@@ -315,16 +327,18 @@ def run_strategy(ticker: str) -> list[dict]:
 
 # ── Display ───────────────────────────────────────────────────────────────────
 
-def print_results(ticker: str, results: list[dict]) -> None:
+def print_results(ticker: str, results: list[dict], mode: str = "sell_put") -> None:
     W = 135
+    payoff_lbl = "Payoff" if mode == "buy_call" else "Intr  "
     header = (
         f"{'Start':<13} {'End':<12} {'Sig':<4} {'4W Move':<24} "
         f"{'Trade':<10} {'Entry':>7} {'Expiry':>7} {'Strike':>7} "
-        f"{'Prem':>6} {'C':>1} {'Intr':>6} {'PnL $':>8} {'PnL%':>7} {'Cum%':>8}"
+        f"{'Prem':>6} {'C':>1} {payoff_lbl:>6} {'PnL $':>8} {'PnL%':>7} {'Cum%':>8}"
     )
 
+    strategy_label = "Buy Call (put premium as call price)" if mode == "buy_call" else "Sell Put"
     print(f"\n{'═'*W}")
-    print(f"  {ticker} — Put Vol Premium Strategy  (4-week momentum filter)")
+    print(f"  {ticker} — {strategy_label}  (4-week momentum filter)")
     print(f"{'═'*W}")
     print(header)
     print(f"{'─'*W}")
@@ -334,6 +348,7 @@ def print_results(ticker: str, results: list[dict]) -> None:
     no_trades    = 0
     total_pnl    = 0.0
     wins = losses = 0
+    active_trade = "BUY CALL" if mode == "buy_call" else "SELL PUT"
 
     for r in results:
         cumul += r["pnl_pct"]
@@ -341,7 +356,7 @@ def print_results(ticker: str, results: list[dict]) -> None:
         carry  = "C" if r.get("carried") else " "
         sig    = "YES" if r["signal"] else "no "
 
-        if r["trade"] == "SELL PUT":
+        if r["trade"] == active_trade:
             total_trades += 1
             total_pnl    += r["pnl_pct"]
             wins   += 1 if r["pnl_pct"] >= 0 else 0
@@ -360,7 +375,7 @@ def print_results(ticker: str, results: list[dict]) -> None:
             f"{r['trade']:<10} "
             f"{e_str:>7} {ex_str:>7} {st_str:>7} "
             f"{pr_str:>6} {carry:>1} "
-            f"{r['intrinsic']:>6.2f} "
+            f"{r['payoff']:>6.2f} "
             f"{r['pnl_dollar']:>8.2f} "
             f"{r['pnl_pct']:>6.2f}% "
             f"{cumul:>7.2f}%"
@@ -381,5 +396,5 @@ def print_results(ticker: str, results: list[dict]) -> None:
 
 if __name__ == "__main__":
     for ticker in ["AAPL", "AMZN"]:
-        results = run_strategy(ticker)
-        print_results(ticker, results)
+        results = run_strategy(ticker, mode="buy_call")
+        print_results(ticker, results, mode="buy_call")
