@@ -45,6 +45,7 @@ from pathlib import Path
 from selenium import webdriver
 from selenium.webdriver.chrome.options import Options
 from selenium.webdriver.common.by import By
+from selenium.webdriver.common.keys import Keys
 from selenium.webdriver.support.ui import WebDriverWait, Select
 from selenium.webdriver.support import expected_conditions as EC
 from selenium.common.exceptions import (
@@ -61,6 +62,7 @@ from fetch_options_barchart import (
     extract_atm_put,
     _dismiss_cmp_overlay,
     _third_friday,
+    select_expiry,
 )
 
 # ---------------------------------------------------------------------------
@@ -178,10 +180,7 @@ def _wait_for_download(download_dir: Path, timeout: int = 30) -> Path | None:
 # ---------------------------------------------------------------------------
 
 def _click_download_button(driver: webdriver.Chrome, download_dir: Path, timeout: int = 15) -> Path | None:
-    """
-    Click Barchart's Download button (toolbar) and wait for the CSV file.
-    Returns the Path of the downloaded file, or None if nothing appeared.
-    """
+    """Click Barchart's Download toolbar button and wait for the CSV."""
     def _click_el(el) -> bool:
         try:
             el.click()
@@ -196,26 +195,18 @@ def _click_download_button(driver: webdriver.Chrome, download_dir: Path, timeout
 
     _dismiss_cmp_overlay(driver)
 
-    download_selectors = [
-        'a.toolbar-button.download',
-        'a[data-bc-download-button]',
-        'button#download',
-        'button.download',
-        'a#download',
-        'a.download',
-        'button[class*="download"]',
-        'a[class*="download"]',
-        'a[href*="download"]',
-    ]
-    for sel in download_selectors:
+    for sel in [
+        'a.toolbar-button.download', 'a[data-bc-download-button]',
+        'button#download', 'button.download', 'a#download', 'a.download',
+        'button[class*="download"]', 'a[class*="download"]', 'a[href*="download"]',
+    ]:
         for el in driver.find_elements(By.CSS_SELECTOR, sel):
             if _click_el(el):
                 result = _wait_for_download(download_dir, timeout=timeout)
                 if result and result.stat().st_size > 200:
                     return result
-                break  # clicked but no file — try next selector
+                break
 
-    # Fallback: any element with text "Download"
     for el in driver.find_elements(By.XPATH, '//*[contains(text(),"Download")]'):
         if _click_el(el):
             result = _wait_for_download(download_dir, timeout=timeout)
@@ -226,6 +217,137 @@ def _click_download_button(driver: webdriver.Chrome, download_dir: Path, timeout
     return None
 
 
+def _set_trade_date_ui(driver: webdriver.Chrome, obs_date: date) -> bool:
+    """
+    Type the historical trade date into Barchart's date-picker input.
+
+    Barchart's Angular options page has a "Trade Date" input that loads
+    historical option prices when filled.  Direct URL parameters like
+    ?tradeDate=... are silently ignored by the Angular router, so we must
+    interact with this input element directly.
+
+    Returns True if an input was found and filled.
+    """
+    _dismiss_cmp_overlay(driver)
+    obs_str = obs_date.strftime("%m/%d/%Y")   # US format expected by Barchart
+
+    date_selectors = [
+        'input[data-ng-model*="radeDate"]',
+        'input[data-ng-model*="rade_date"]',
+        'input[placeholder*="Trade Date"]',
+        'input[placeholder*="trade date"]',
+        'input[placeholder*="Historical"]',
+        'input[name*="tradeDate"]',
+        'input[name*="trade"]',
+        '#tradeDate',
+        '[class*="trade-date"] input',
+        '[class*="tradeDate"] input',
+    ]
+    for sel in date_selectors:
+        for el in driver.find_elements(By.CSS_SELECTOR, sel):
+            try:
+                driver.execute_script("arguments[0].click();", el)
+                time.sleep(0.3)
+                el.send_keys(Keys.CONTROL + 'a')
+                el.send_keys(obs_str)
+                time.sleep(0.3)
+                el.send_keys(Keys.RETURN)
+                time.sleep(2.5)   # let Angular reload the expiry list
+                return True
+            except Exception:
+                continue
+    return False
+
+
+def _api_fetch(
+    driver: webdriver.Chrome,
+    download_dir: Path,
+    ticker: str,
+    expiry: date,
+    observation_date: date | None = None,
+) -> Path | None:
+    """
+    Call Barchart's internal JSON API using the authenticated session cookies
+    already held by the Selenium browser.  This bypasses the Angular router
+    redirect that makes URL-based historical downloads fail.
+
+    observation_date=None → settlement prices (no tradeDate filter).
+    Returns a Path to a saved CSV, or None on failure.
+    """
+    try:
+        import requests as req
+
+        cookies = {c['name']: c['value'] for c in driver.get_cookies()}
+        xsrf    = cookies.get('XSRF-TOKEN', '')
+
+        headers = {
+            'User-Agent':   'Mozilla/5.0 (Windows NT 10.0; Win64; x64) '
+                            'AppleWebKit/537.36 (KHTML, like Gecko) '
+                            'Chrome/122.0.0.0 Safari/537.36',
+            'Referer':      f'https://www.barchart.com/stocks/quotes/{ticker}/options',
+            'Accept':       'application/json, text/plain, */*',
+            'X-XSRF-TOKEN': xsrf,
+        }
+
+        params: dict = {
+            'symbol':    ticker,
+            'expiration': expiry.isoformat(),
+            'type':      'put',
+            'moneyness': 'allRows',
+            'raw':       '1',
+            'fields':    'symbol,strikePrice,bid,ask,lastPrice,volume,'
+                         'openInterest,volatility,delta,gamma,theta,vega',
+            'page':      '1',
+            'limit':     '2000',
+        }
+        if observation_date is not None:
+            params['tradeDate'] = observation_date.isoformat()
+
+        resp = req.get(
+            'https://www.barchart.com/proxies/core-api/v1/options/chain.json',
+            params=params, cookies=cookies, headers=headers, timeout=30,
+        )
+
+        if resp.status_code != 200:
+            print(f"\n    [diag] API HTTP {resp.status_code}: {resp.text[:120]}")
+            return None
+
+        data = resp.json()
+        rows = data.get('data', [])
+        if not rows:
+            print(f"\n    [diag] API OK but no rows. keys={list(data.keys())}")
+            return None
+
+        records = [item.get('raw', item) for item in rows]
+        df = pd.DataFrame(records)
+        if df.empty:
+            return None
+
+        df.rename(columns={
+            'strikePrice':  'Strike',
+            'bid':          'Bid',
+            'ask':          'Ask',
+            'lastPrice':    'Last',
+            'volatility':   'IV',
+            'delta':        'Delta',
+            'gamma':        'Gamma',
+            'theta':        'Theta',
+            'vega':         'Vega',
+            'openInterest': 'Open Interest',
+            'volume':       'Volume',
+            'symbol':       'Symbol',
+        }, inplace=True)
+
+        tag = observation_date.isoformat() if observation_date else "settlement"
+        out = download_dir / f'{ticker}_{expiry}_{tag}_api.csv'
+        df.to_csv(out, index=False)
+        return out
+
+    except Exception as e:
+        print(f"\n    [diag] API exception: {e}")
+        return None
+
+
 def download_historical_chain(
     driver: webdriver.Chrome,
     download_dir: Path,
@@ -234,75 +356,71 @@ def download_historical_chain(
     observation_date: date,
 ) -> tuple[Path | None, str]:
     """
-    Download the put chain for (ticker, expiry) from Barchart by navigating
-    the OPTIONS PAGE (not the /download endpoint).
+    Download the historical put chain for (ticker, expiry) as of observation_date.
 
-    Barchart's /options/download endpoint redirects historical expiries to the
-    current week — it only works for live/future expiries.  The correct approach
-    for historical data is to load the options page with the expiry and tradeDate
-    query parameters and then click the Download button.
+    Barchart's Angular router ignores ?expiration=historical-date in the URL
+    and replaces it with the current week's expiry, so direct URL navigation
+    never works for historical data.
 
-    Tries:
-      1. /options?expiration=YYYY-MM-DD-m&tradeDate=YYYY-MM-DD  → entry snapshot
-      2. /options?expiration=YYYY-MM-DD-m                       → settlement prices
-
-    Returns (csv_path_or_None, source_label).
+    Three strategies tried in order:
+      1. UI date-picker  — navigate to base options page, type observation_date
+                           into Barchart's Trade Date input, select expiry from
+                           the reloaded dropdown, click Download.
+      2. JSON API        — call Barchart's internal /proxies/core-api endpoint
+                           with the authenticated session cookies; returns a
+                           JSON payload that we convert to CSV.
+      3. Settlement API  — same API call without tradeDate; gives prices as of
+                           the last trading session before expiry.
     """
-    expiry_str = expiry.isoformat()      # "2017-07-21"
-    obs_str    = observation_date.isoformat()
-    base_page  = OPTIONS_PAGE.format(symbol=ticker)
+    base_page = OPTIONS_PAGE.format(symbol=ticker)
 
     # ------------------------------------------------------------------
-    # Strategy 1: historical snapshot (tradeDate param on the options page)
+    # Strategy 1: UI date-picker → expiry selection → Download button
     # ------------------------------------------------------------------
     for f in download_dir.glob("*.csv"):
         f.unlink()
 
-    # type=put&moneyness=allRows ensures the page shows ALL put strikes
-    # (not just near-the-money relative to today's price) so that the
-    # historical ATM strike at observation_date is always present in the CSV.
-    snap_page = (
-        f"{base_page}?expiration={expiry_str}-m"
-        f"&tradeDate={obs_str}&type=put&moneyness=allRows"
-    )
-    driver.get(snap_page)
-    time.sleep(3)   # wait for AngularJS to render the historical chain
+    driver.get(base_page)
+    time.sleep(3)
 
-    # Bail early if Barchart redirected to a different expiry
-    # (happens when historical data is unavailable — page silently swaps to current expiry)
-    if expiry_str in driver.current_url:
+    date_set = _set_trade_date_ui(driver, observation_date)
+    if date_set:
+        select_expiry(driver, expiry)
+        time.sleep(2)
         result = _click_download_button(driver, download_dir, timeout=15)
         if result:
             return result, "entry_snapshot"
+        print("\n    [diag] UI date-picker found but download button produced no file")
     else:
-        print(f"\n    [diag] snap redirect: {driver.current_url[:90]}")
+        print("\n    [diag] Trade-date input not found on page — trying API")
 
     # ------------------------------------------------------------------
-    # Strategy 2: settlement / last-traded (no tradeDate filter)
+    # Strategy 2: Barchart JSON API with tradeDate (entry snapshot)
     # ------------------------------------------------------------------
     for f in download_dir.glob("*.csv"):
         f.unlink()
 
-    plain_page = f"{base_page}?expiration={expiry_str}-m&type=put&moneyness=allRows"
-    driver.get(plain_page)
-    time.sleep(3)
+    result = _api_fetch(driver, download_dir, ticker, expiry, observation_date)
+    if result:
+        return result, "entry_snapshot"
 
-    if expiry_str in driver.current_url:
-        result = _click_download_button(driver, download_dir, timeout=15)
-        if result:
-            return result, "settlement"
-    else:
-        print(f"\n    [diag] plain redirect: {driver.current_url[:90]}")
+    # ------------------------------------------------------------------
+    # Strategy 3: Barchart JSON API without tradeDate (settlement)
+    # ------------------------------------------------------------------
+    for f in download_dir.glob("*.csv"):
+        f.unlink()
 
-    # Diagnostics
-    print(f"\n    [diag] snap page  : {snap_page}")
-    print(f"    [diag] plain page : {plain_page}")
-    print(f"    [diag] landed on  : {driver.current_url}")
+    result = _api_fetch(driver, download_dir, ticker, expiry, observation_date=None)
+    if result:
+        return result, "settlement"
+
+    # Final diagnostics
+    print(f"\n    [diag] all strategies failed | page: {driver.current_url[:80]}")
     try:
         snippet = driver.execute_script(
             "return (document.body.innerText || '').substring(0, 300)"
         )
-        print(f"    [diag] page text  : {snippet[:200].strip()}")
+        print(f"    [diag] page text: {snippet[:200].strip()}")
     except Exception:
         pass
 
