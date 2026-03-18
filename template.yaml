@@ -3,16 +3,19 @@ Transform: AWS::Serverless-2016-10-31
 
 Description: >
   SellVol SingleEQ — Monthly sell-put signal generator for 50 SPX stocks.
-  Runs on the 1st of each month via EventBridge.
+  Includes vol-premium extraction from options data stored in S3.
+
+Parameters:
+  OptionsBucketName:
+    Type: String
+    Default: "s3bucketmz"
+    Description: "Existing S3 bucket containing raw options data under optionsData/"
 
 Globals:
   Function:
-    Timeout: 120          # yfinance can be slow for 50 tickers
+    Timeout: 300
     MemorySize: 512
     Runtime: python3.12
-    Environment:
-      Variables:
-        SIGNALS_BUCKET: !Ref SignalsBucket
 
 Resources:
 
@@ -27,7 +30,7 @@ Resources:
             Status: Enabled
             ExpirationInDays: 1825   # keep 5 years
 
-  # ---- Lambda function ----
+  # ---- Lambda: monthly sell-put signal generator ----
   SellVolFunction:
     Type: AWS::Serverless::Function
     Properties:
@@ -35,6 +38,9 @@ Resources:
       CodeUri: .
       Handler: lambda_function.lambda_handler
       Description: "Monthly sell-put signal generator — 50 SPX stocks"
+      Environment:
+        Variables:
+          SIGNALS_BUCKET: !Ref SignalsBucket
       Policies:
         - S3WritePolicy:
             BucketName: !Ref SignalsBucket
@@ -49,8 +55,43 @@ Resources:
             Description: "Trigger signal generation on 1st of each month"
             Enabled: true
 
+  # ---- Lambda: put vol-premium extractor ----
+  VolPremiumFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: SellVol-VolPremium
+      CodeUri: .
+      Handler: lambda_vol_premium.lambda_handler
+      Description: "Extracts put vol premium from options CSVs in S3"
+      Environment:
+        Variables:
+          OPTIONS_BUCKET: !Ref OptionsBucketName
+          OPTIONS_PREFIX: "optionsData/"
+      Policies:
+        # Read options data from source bucket
+        - S3ReadPolicy:
+            BucketName: !Ref OptionsBucketName
+        # Write vol_premium/ results back to same bucket
+        - S3WritePolicy:
+            BucketName: !Ref OptionsBucketName
+
+      # EventBridge trigger: runs on 2nd of every month at 07:00 UTC
+      # (after SellVolFunction has run on the 1st)
+      Events:
+        MonthlyTrigger:
+          Type: Schedule
+          Properties:
+            Schedule: cron(0 7 2 * ? *)
+            Name: SellVol-VolPremiumTrigger
+            Description: "Extract vol premium on 2nd of each month"
+            Enabled: true
+
 Outputs:
-  FunctionArn:
+  SellVolFunctionArn:
     Value: !GetAtt SellVolFunction.Arn
+  VolPremiumFunctionArn:
+    Value: !GetAtt VolPremiumFunction.Arn
   SignalsBucketName:
     Value: !Ref SignalsBucket
+  OptionsBucketName:
+    Value: !Ref OptionsBucketName
