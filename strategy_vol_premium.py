@@ -527,6 +527,176 @@ def print_results(ticker: str, results: list[dict], mode: str = "sell_put") -> N
     print(f"\n  Legend: * synthetic (gap) period  |  C premium carried forward")
 
 
+# ── Portfolio stats ───────────────────────────────────────────────────────────
+
+def portfolio_stats(
+    results_by_ticker: dict,
+    label: str = "Equal-Weighted Portfolio",
+) -> None:
+    """
+    Print portfolio-level risk stats for an equal-weighted mix of per-ticker
+    strategy results (output of run_strategy).
+
+    Parameters
+    ----------
+    results_by_ticker : {ticker: list[dict]}
+    label             : header title
+    """
+    import math
+    from collections import defaultdict
+
+    tickers   = list(results_by_ticker.keys())
+    n_tickers = len(tickers)
+
+    # ── 1. Align periods by period_start date ────────────────────────────────
+    by_date: dict = defaultdict(dict)
+    for ticker, res in results_by_ticker.items():
+        for r in res:
+            by_date[r["period_start"]][ticker] = r["pnl_pct"]
+
+    dates = sorted(by_date.keys())
+
+    # ── 2. Equal-weighted portfolio return per period ────────────────────────
+    port_returns = []   # [(date_str, pct)]
+    for d in dates:
+        row  = by_date[d]
+        pnls = [row.get(t, 0.0) for t in tickers]
+        port_returns.append((d, sum(pnls) / n_tickers))
+
+    # ── 3. Cumulative equity curve (additive %) ───────────────────────────────
+    equity = [0.0]
+    for _, r in port_returns:
+        equity.append(equity[-1] + r)
+
+    # ── 4. Max drawdown ───────────────────────────────────────────────────────
+    peak_val     = equity[0]
+    peak_idx     = 0
+    max_dd       = 0.0
+    dd_start     = dates[0]
+    dd_end       = dates[0]
+    for i, v in enumerate(equity[1:], 1):
+        if v > peak_val:
+            peak_val = v
+            peak_idx = i
+        dd = peak_val - v
+        if dd > max_dd:
+            max_dd   = dd
+            dd_start = dates[peak_idx - 1] if peak_idx > 0 else dates[0]
+            dd_end   = dates[i - 1]        if i - 1 < len(dates) else dates[-1]
+
+    # ── 5. Monthly returns ────────────────────────────────────────────────────
+    monthly: dict = defaultdict(float)
+    for d, r in port_returns:
+        monthly[d[:7]] += r          # key = "YYYY-MM"
+
+    # ── 6. Summary stats ─────────────────────────────────────────────────────
+    rets  = [r for _, r in port_returns]
+    n     = len(rets)
+    total = equity[-1]
+
+    # ~13 four-week periods per year
+    PPY   = 13.0
+    years = n / PPY
+
+    # CAGR from additive % curve — approximate geometric compounding
+    terminal = 1.0 + total / 100.0
+    cagr     = ((terminal ** (1.0 / years)) - 1.0) * 100.0 if terminal > 0 else float("-inf")
+
+    mean_r = sum(rets) / n if n else 0.0
+    var    = sum((r - mean_r) ** 2 for r in rets) / n if n else 0.0
+    std_r  = math.sqrt(var)
+    sharpe = (mean_r / std_r) * math.sqrt(PPY) if std_r else 0.0
+
+    # Sortino uses downside deviation (vs 0 target)
+    down_sq   = [r ** 2 for r in rets if r < 0]
+    down_std  = math.sqrt(sum(down_sq) / n) if n else 0.0
+    sortino   = (mean_r / down_std) * math.sqrt(PPY) if down_std else 0.0
+
+    best_period  = max(port_returns, key=lambda x: x[1])
+    worst_period = min(port_returns, key=lambda x: x[1])
+
+    wins   = sum(1 for r in rets if r > 0)
+    losses = sum(1 for r in rets if r < 0)
+    flat   = n - wins - losses
+
+    # ── 7. Header + summary ───────────────────────────────────────────────────
+    W = 92
+    print(f"\n{'═'*W}")
+    print(f"  {label}  ({'  +  '.join(tickers)}  |  equal-weighted)")
+    print(f"{'═'*W}")
+    print(f"  Periods : {n}  (~{years:.1f} years, {dates[0]} → {dates[-1]})")
+    print(f"  Total P&L : {total:+.2f}%   |   CAGR : {cagr:+.2f}%/yr")
+    print(f"  Max Drawdown : -{max_dd:.2f}%  ({dd_start} → {dd_end})")
+    print(f"  Sharpe (ann) : {sharpe:.2f}   |   Sortino (ann) : {sortino:.2f}")
+    print(f"  Win / Loss / Flat : {wins} / {losses} / {flat}   ({wins/n*100:.0f}% win rate)")
+    print(f"  Avg return/period : {mean_r:+.3f}%   |   Std dev : {std_r:.3f}%")
+    print(f"  Best period  : {best_period[0]}  {best_period[1]:+.2f}%")
+    print(f"  Worst period : {worst_period[0]}  {worst_period[1]:+.2f}%")
+
+    # ── 8. Monthly returns table ──────────────────────────────────────────────
+    MN = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"]
+    yrs = sorted({k[:4] for k in monthly})
+    print(f"\n  Monthly Returns (%):")
+    print(f"  {'Year':>5}  " + "  ".join(f"{m:>6}" for m in MN) + f"  {'Annual':>7}")
+    print(f"  {'─'*5}  " + "  ".join("─"*6 for _ in MN) + f"  {'─'*7}")
+    for yr in yrs:
+        annual = 0.0
+        row_parts = []
+        for mi in range(1, 13):
+            key = f"{yr}-{mi:02d}"
+            val = monthly.get(key)
+            if val is not None:
+                annual += val
+                row_parts.append(f"{val:>+6.2f}")
+            else:
+                row_parts.append(f"{'':>6}")
+        print(f"  {yr:>5}  " + "  ".join(row_parts) + f"  {annual:>+7.2f}")
+
+    # ── 9. ASCII equity curve ─────────────────────────────────────────────────
+    H, CW = 12, 68
+    vals   = equity
+    y_min  = min(vals)
+    y_max  = max(vals)
+    y_rng  = y_max - y_min or 1.0
+
+    step    = max(1, (len(vals) - 1) // CW)
+    sampled = [vals[i] for i in range(0, len(vals), step)]
+    if sampled[-1] != vals[-1]:
+        sampled.append(vals[-1])
+
+    # Place a block at every sampled point
+    grid = [[" "] * len(sampled) for _ in range(H)]
+    for xi, v in enumerate(sampled):
+        yi  = int((v - y_min) / y_rng * (H - 1))
+        row = H - 1 - min(H - 1, max(0, yi))
+        grid[row][xi] = "█"
+
+    # Fill below the curve to make it a solid area chart
+    for xi in range(len(sampled)):
+        filled = False
+        for ri in range(H):
+            if grid[ri][xi] == "█":
+                filled = True
+            if filled and grid[ri][xi] == " ":
+                grid[ri][xi] = "▒"
+
+    print(f"\n  Equity Curve  (cumulative % P&L, additive):")
+    for ri, row in enumerate(grid):
+        lv = y_max - (ri / (H - 1)) * y_rng
+        print(f"  {lv:>7.1f}% │{''.join(row)}")
+    # x-axis
+    bar = "─" * len(sampled)
+    print(f"  {'':>9}└{bar}")
+    n_sam   = len(sampled)
+    l_date  = dates[0][:7]
+    m_date  = dates[len(dates) // 2][:7]
+    e_date  = dates[-1][:7]
+    pad_mid = (n_sam // 2) - len(l_date)
+    pad_end = n_sam - (n_sam // 2) - len(m_date) - 2
+    print(f"  {'':>10}{l_date}{' '*max(1,pad_mid)}{m_date}{' '*max(1,pad_end)}{e_date}")
+    print()
+
+
 # ── Main ──────────────────────────────────────────────────────────────────────
 
 if __name__ == "__main__":
@@ -537,3 +707,13 @@ if __name__ == "__main__":
         for mode in modes:
             results = run_strategy(ticker, mode=mode)
             print_results(ticker, results, mode=mode)
+
+    # ── Portfolio stats for BX + MSFT ─────────────────────────────────────────
+    PORTFOLIO_TICKERS = ["BX", "MSFT"]
+    PORTFOLIO_MODES   = [
+        ("buy_momentum",      "V1 — Buy Directional (Buy Call ↑ / Buy Put ↓)"),
+        ("sell_spy_momentum", "V2 — Sell Vol        (Sell Put ↑ / Sell Call ↓)"),
+    ]
+    for mode, label in PORTFOLIO_MODES:
+        res = {t: run_strategy(t, mode=mode) for t in PORTFOLIO_TICKERS}
+        portfolio_stats(res, label=label)
