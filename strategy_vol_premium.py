@@ -339,23 +339,37 @@ def run_strategy(ticker: str, mode: str = "sell_put") -> list[dict]:
         if premium is not None:
             last_prem = premium
 
-        # ITM intrinsic correction: if the option is in-the-money at entry the
-        # data source may only store extrinsic (time) value.  Add the intrinsic
-        # component so the premium reflects the true market cost.
-        #   call intrinsic = max(0, stock_entry − strike)
-        #   put  intrinsic = max(0, strike − stock_entry)
+        # ── ATM normalization ──────────────────────────────────────────────────
+        # Puts are intended to be ATM (strike ≈ stock price), but available
+        # strikes are at fixed intervals so there is always some distance.
+        # Normalize the stored market premium to an ATM-equivalent value using
+        # delta ≈ 0.5 (true ATM delta) applied to the moneyness gap:
+        #
+        #   adjusted_premium = premium + (stock_entry − strike) × 0.5
+        #
+        # • OTM put (strike < stock): stock_entry − strike > 0  → premium rises
+        #   (the market premium is too low vs ATM; add back the deficit)
+        # • ITM put (strike > stock): stock_entry − strike < 0  → premium falls
+        #   (the market premium includes intrinsic on top of ATM time value;
+        #    subtract the excess — note: Barchart stores the FULL market price
+        #    so the old "add intrinsic" correction was double-counting)
+        # • ATM (strike = stock): no change
+        #
+        # The adjustment is signed and applied in both directions every period.
         strike = rec["strike"]
-        itm_correction = 0.0
+        atm_correction = 0.0
         if premium is not None and strike is not None and stock_entry is not None:
             if _opt_type == "call":
-                itm_correction = max(0.0, stock_entry - strike)
+                # Call: OTM when strike > stock, ITM when strike < stock
+                atm_correction = (strike - stock_entry) * 0.5
             else:
-                itm_correction = max(0.0, strike - stock_entry)
-            if itm_correction > 0.01:
-                print(f"  [{rec['period_start']}] {ticker} ITM {_opt_type}: "
+                # Put: OTM when strike < stock, ITM when strike > stock
+                atm_correction = (stock_entry - strike) * 0.5
+            if abs(atm_correction) > 0.01:
+                print(f"  [{rec['period_start']}] {ticker} ATM adj ({_opt_type}): "
                       f"stock={stock_entry:.2f} strike={strike:.2f} "
-                      f"→ adding intrinsic {itm_correction:.2f} to premium {premium:.2f}")
-                premium = premium + itm_correction
+                      f"→ {atm_correction:+.2f}  premium {premium:.2f} → {premium + atm_correction:.2f}")
+            premium = max(0.0, premium + atm_correction)
 
         # ── P&L ───────────────────────────────────────────────────────────────
         if (signal and premium is not None
@@ -427,9 +441,9 @@ def run_strategy(ticker: str, mode: str = "sell_put") -> list[dict]:
             "stock_entry":   round(stock_entry, 2) if stock_entry else None,
             "stock_expiry":  round(stock_expiry, 2) if stock_expiry else None,
             "strike":        strike,
-            "premium":       round(premium, 2) if premium else None,
-            "itm_correction": round(itm_correction, 2),
-            "carried":       carried,
+            "premium":        round(premium, 2) if premium else None,
+            "atm_correction": round(atm_correction, 2),
+            "carried":        carried,
             "payoff":        round(payoff, 2),
             "pnl_dollar":    round(pnl_dollar, 2),
             "pnl_pct":       round(pnl_pct, 4),
@@ -442,7 +456,7 @@ def run_strategy(ticker: str, mode: str = "sell_put") -> list[dict]:
 
 def print_results(ticker: str, results: list[dict], mode: str = "sell_put") -> None:
     W = 135
-    payoff_lbl = "Payoff" if mode == "buy_call" else "Intr  "
+    payoff_lbl = "Payoff" if mode == "buy_call" else "Payoff"
     header = (
         f"{'Start':<13} {'End':<12} {'Sig':<4} {'4W Move':<24} "
         f"{'Trade':<10} {'Entry':>7} {'Expiry':>7} {'Strike':>7} "
