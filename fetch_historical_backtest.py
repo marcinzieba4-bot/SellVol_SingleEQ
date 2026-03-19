@@ -124,19 +124,27 @@ def get_historical_price(ticker: str, target_date: date) -> float | None:
     """
     Return the ACTUAL (unadjusted) closing price of ticker on target_date.
 
-    yfinance always returns split-adjusted prices. To recover the actual
-    historical price (needed to match against Barchart's option strikes),
-    we multiply the adjusted price by the cumulative factor of all splits
-    that occurred AFTER target_date.
+    yfinance auto_adjust=True adjusts backward for BOTH splits AND dividends.
+    High-dividend stocks (BX, SCHW, MS, GS, ...) show prices significantly
+    below their actual trading price, leading to wrong ATM strikes.
+
+    auto_adjust=False adjusts for splits only (not dividends), which matches
+    the prices Barchart uses for its option chains.  We then un-apply any
+    splits that occurred AFTER target_date to recover the true historical price.
 
     Example for NVDA: 4:1 split 2021-07-20, 10:1 split 2024-06-10.
-    yfinance shows ~$3.61 for 2017-06-01; actual was ~$144.36 ($3.61 × 40).
+    auto_adjust=False shows ~$12.5 for Sep-2020 (÷40 for future splits).
+    We multiply ×40 → ~$500, the actual Sep-2020 trading price.
+
+    Example for BX: no splits after Sep-2020 → auto_adjust=False already
+    returns the correct ~$54 trading price (not the dividend-deflated ~$44
+    that auto_adjust=True produces).
     """
     start = target_date - timedelta(days=7)
     end   = target_date + timedelta(days=1)   # yfinance end is exclusive
     try:
         t = yf.Ticker(ticker)
-        df = t.history(start=start.isoformat(), end=end.isoformat(), auto_adjust=True)
+        df = t.history(start=start.isoformat(), end=end.isoformat(), auto_adjust=False)
         if df.empty:
             return None
         df.index = pd.to_datetime(df.index).date
