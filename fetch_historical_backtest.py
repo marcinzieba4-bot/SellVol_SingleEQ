@@ -384,13 +384,14 @@ def _scrape_price_history_page(
     download_dir: Path,
 ) -> dict | None:
     """
-    Navigate to Barchart's price-history page for a specific put contract
-    and extract the OHLC row for obs_date by scraping the rendered table.
+    Navigate to Barchart's price-history page and extract the OHLC row for
+    obs_date.
 
-    This is the guaranteed fallback — the page the user confirmed shows
-    historical data at:
-      barchart.com/options/price-history?symbol=AAPL&expirationDate=...
-      &symbolType=P&strikePrice=130.00
+    Strategy:
+      1. Load the page so the browser fires the real credentialed XHR.
+      2. Collect all matching XHR URLs from the Performance API.
+      3. Re-fetch each intercepted URL via _bc_fetch (gets full response).
+      4. Fall back to DOM table scraping if step 3 yields nothing.
     """
     page_url = (
         f"https://www.barchart.com/options/price-history"
@@ -402,7 +403,7 @@ def _scrape_price_history_page(
     driver.get(page_url)
     _dismiss_cmp_overlay(driver)
 
-    # Wait for the data table to appear (up to 8 s)
+    # Wait up to 8 s for the data to load
     for _ in range(16):
         time.sleep(0.5)
         try:
@@ -412,33 +413,89 @@ def _scrape_price_history_page(
         except Exception:
             pass
 
-    # Try to intercept the XHR Barchart made while loading the page
-    # (captures whatever API endpoint it actually uses)
+    # ── Strategy 1: re-fetch every intercepted XHR URL ───────────────────
+    # The browser made credentialed requests we can replay via _bc_fetch.
     try:
-        xhrdata = driver.execute_script("""
+        xhr_urls = driver.execute_script("""
+            var out = [];
             var entries = performance.getEntriesByType('resource');
             for (var e of entries) {
-                if (e.name.includes('proxies') || e.name.includes('historical')) {
-                    return e.name;
+                if (e.name.includes('proxies') && e.name.includes('historical')) {
+                    out.push(e.name);
                 }
             }
-            return null;
-        """)
-        if xhrdata:
-            print(f"\n    [diag-page-xhr] {xhrdata[:200]}")
+            return out;
+        """) or []
     except Exception:
-        pass
+        xhr_urls = []
 
-    # Date variants Barchart might display (no %-m — not portable on Windows)
-    obs_variants = {
-        obs_date.strftime('%m/%d/%y'),    # 09/01/20
-        obs_date.strftime('%m/%d/%Y'),    # 09/01/2020
-        obs_date.isoformat(),             # 2020-09-01
-        f"{obs_date.month}/{obs_date.day}/{obs_date.year % 100:02d}",  # 9/1/20
-        f"{obs_date.month}/{obs_date.day}/{obs_date.year}",            # 9/1/2020
+    obs_date_variants = {
+        obs_date.isoformat(),
+        obs_date.strftime('%m/%d/%Y'),
+        obs_date.strftime('%m/%d/%y'),
+        f"{obs_date.month}/{obs_date.day}/{obs_date.year}",
+        f"{obs_date.month}/{obs_date.day}/{obs_date.year % 100:02d}",
     }
 
-    # Scrape all table rows, find the one matching obs_date
+    def _is_valid_xhr_row(raw: dict) -> bool:
+        trade_time = str(raw.get('tradeTime', raw.get('date', '')))
+        if '01/01/70' in trade_time or '1970' in trade_time:
+            return False
+        last = raw.get('lastPrice') or raw.get('close') or raw.get('last', '')
+        return str(last).strip() not in ('', 'N/A', 'n/a', 'null', 'None')
+
+    def _parse_xhr_date(raw: dict) -> date | None:
+        s = str(raw.get('tradeTime', raw.get('date', ''))).strip()
+        for fmt in ('%m/%d/%y %H:%M:%S', '%m/%d/%Y %H:%M:%S',
+                    '%m/%d/%y', '%m/%d/%Y', '%Y-%m-%d'):
+            try:
+                return datetime.strptime(s.split()[0], fmt.split()[0]).date()
+            except ValueError:
+                continue
+        return None
+
+    def _best_row_from_data(data: dict | None) -> dict | None:
+        if not data or data.get('error'):
+            return None
+        rows = [r.get('raw', r) for r in data.get('data', [])]
+        rows = [r for r in rows if _is_valid_xhr_row(r)]
+        if not rows:
+            return None
+        # Exact match first
+        for raw in rows:
+            if any(v in str(raw.get('tradeTime', raw.get('date', '')))
+                   for v in obs_date_variants):
+                return raw
+        # Closest row on or before obs_date (no distance limit for page data)
+        best, best_delta = None, timedelta.max
+        for raw in rows:
+            d = _parse_xhr_date(raw)
+            if d and d <= obs_date:
+                delta = obs_date - d
+                if delta <= best_delta:
+                    best, best_delta = raw, delta
+        return best
+
+    for xhr_url in xhr_urls:
+        print(f"\n    [diag-page-xhr] {xhr_url[:200]}")
+        # Strip the host so _bc_fetch can use relative URLs
+        rel = xhr_url.replace('https://www.barchart.com', '')
+        data = _bc_fetch(driver, rel)
+        row = _best_row_from_data(data)
+        if row:
+            d_found = _parse_xhr_date(row)
+            print(f"    [diag-page-xhr] accepted row dated {d_found}")
+            # Normalise field names to *Price convention for _save()
+            return {
+                'lastPrice':  row.get('lastPrice') or row.get('close'),
+                'openPrice':  row.get('openPrice') or row.get('open'),
+                'highPrice':  row.get('highPrice') or row.get('high'),
+                'lowPrice':   row.get('lowPrice')  or row.get('low'),
+                'volume':     row.get('volume'),
+                'openInterest': row.get('openInterest'),
+            }
+
+    # ── Strategy 2: DOM table scraping ───────────────────────────────────
     try:
         raw_rows = driver.execute_script("""
             var result = [];
@@ -446,31 +503,30 @@ def _scrape_price_history_page(
             for (var r of rows) {
                 var cells = r.querySelectorAll('td');
                 if (cells.length >= 4) {
-                    result.push(Array.from(cells).map(function(c){return c.textContent.trim();}));
+                    result.push(Array.from(cells).map(
+                        function(c){return c.textContent.trim();}));
                 }
             }
             return result;
         """)
         if raw_rows:
             for row in raw_rows:
-                if any(v in row[0] for v in obs_variants):
-                    # Typical column order: Date, Open, High, Low, Last, Volume, OI
+                if any(v in row[0] for v in obs_date_variants):
                     def _f(x):
                         try:
                             return float(str(x).replace(',', ''))
                         except Exception:
                             return None
                     return {
-                        'close':         _f(row[4]) if len(row) > 4 else _f(row[-1]),
-                        'open':          _f(row[1]) if len(row) > 1 else None,
-                        'high':          _f(row[2]) if len(row) > 2 else None,
-                        'low':           _f(row[3]) if len(row) > 3 else None,
-                        'volume':        _f(row[5]) if len(row) > 5 else None,
-                        'openInterest':  _f(row[6]) if len(row) > 6 else None,
+                        'lastPrice': _f(row[4]) if len(row) > 4 else _f(row[-1]),
+                        'openPrice': _f(row[1]) if len(row) > 1 else None,
+                        'highPrice': _f(row[2]) if len(row) > 2 else None,
+                        'lowPrice':  _f(row[3]) if len(row) > 3 else None,
+                        'volume':    _f(row[5]) if len(row) > 5 else None,
+                        'openInterest': _f(row[6]) if len(row) > 6 else None,
                     }
-            # If date not found, log the first few rows so we can see the format
             print(f"\n    [diag-page] table has {len(raw_rows)} rows; "
-                  f"first row[0]={raw_rows[0][0]!r} (looking for {obs_variants})")
+                  f"first row[0]={raw_rows[0][0]!r} (looking for {obs_date_variants})")
     except Exception as e:
         print(f"\n    [diag-page] scrape error: {e}")
 
