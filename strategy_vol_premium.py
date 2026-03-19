@@ -285,13 +285,13 @@ def run_strategy(ticker: str, mode: str = "sell_put") -> list[dict]:
             signal = stock_entry is not None
         elif mode in ("sell_call_negative", "buy_put"):
             signal = have_signal_data and not up
-        elif mode in ("buy_momentum", "sell_spy_momentum"):
+        elif mode in ("buy_momentum", "sell_spy_momentum", "call_momentum"):
             signal = have_signal_data          # always in — direction encoded in trade
         else:  # sell_put / buy_call: trade when last 4W positive
             signal = up
 
         # Option type for this period (call vs put) — needed for intrinsic correction
-        if mode in ("buy_call", "sell_call_always", "sell_call_negative"):
+        if mode in ("buy_call", "sell_call_always", "sell_call_negative", "call_momentum"):
             _opt_type = "call"
         elif mode in ("sell_put", "sell_put_always", "buy_put"):
             _opt_type = "put"
@@ -360,6 +360,15 @@ def run_strategy(ticker: str, mode: str = "sell_put") -> list[dict]:
                     payoff     = max(0.0, strike - stock_expiry)
                     pnl_dollar = payoff - premium
                     trade      = "BUY PUT"
+            elif mode == "call_momentum":
+                # up → buy call, down → sell call (calls only)
+                payoff = max(0.0, stock_expiry - strike)
+                if up:
+                    pnl_dollar = payoff - premium
+                    trade      = "BUY CALL"
+                else:
+                    pnl_dollar = premium - payoff
+                    trade      = "SELL CALL"
             elif mode == "sell_spy_momentum":
                 # up → sell put, down → sell call
                 if up:
