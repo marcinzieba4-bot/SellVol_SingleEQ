@@ -1,78 +1,71 @@
 # ============================================================
 #  SPX TOP-40 OPTIONS DATA SHOPPING LIST
-#  Generated: March 2026
+#  Derived from spx50_periods.json
+#  History: 2020-09-01 -> 2026-02-16  (72 periods)
 #
-#  These are the tickers you need to download options data
-#  for to run build_spx40_periods.py / a top-40 backtest.
+#  60 unique tickers were in the top-40 at least once.
+#  These are the stocks you need options data for.
 #
-#  Logic: current top-40 by market cap + ~8 buffer tickers
-#  that were in the top-40 at some point during 2020–2026
-#  (due to historical market cap shifts).
-#
-#  Format: TICKER  |  ~current mktcap $B  |  why included
+#  Columns: TICKER  best_rank  first_seen   last_seen   latest_mktcap_$B
 # ============================================================
 
-# ── CERTAIN: current top-40 by market cap ────────────────────
-AAPL     # $3700B  #1   mega-cap, entire period
-NVDA     # $3100B  #2   surged from ~$400B in 2020; now #2
-MSFT     # $2900B  #3   mega-cap, entire period
-AMZN     # $2400B  #4   mega-cap, entire period
-GOOGL    # $2000B  #5   mega-cap, entire period
-META     # $1600B  #6   was Facebook; in top-40 from 2020
-TSLA     # $1000B  #7   surged 2020-2021, stayed large
-BRK-B    # $  930B  #8   steadily large, entire period
-AVGO     # $  900B  #9   surged significantly post-2022
-WMT      # $  780B  #10  steady large-cap
-JPM      # $  700B  #11  largest US bank
-LLY      # $  680B  #12  surged from ~$150B in 2020 (GLP-1 boom)
-V        # $  580B  #13  payments, entire period
-UNH      # $  530B  #14  health insurer, entire period
-XOM      # $  510B  #15  energy, surged 2022 with oil prices
-ORCL     # $  500B  #16  climbed into top-40 by 2022
-MA       # $  450B  #17  payments, entire period
-COST     # $  420B  #18  steady compounder
-NFLX     # $  400B  #19  volatile but stayed large
-PG       # $  390B  #20  staples, steady
-JNJ      # $  380B  #21  pharma/medtech, entire period
-HD       # $  380B  #22  home improvement, large throughout
-GOOG     # $  350B  #23  Alphabet Class C (separate from GOOGL)
-ABBV     # $  330B  #24  pharma, large throughout
-BAC      # $  330B  #25  large US bank
-CRM      # $  310B  #26  climbed into top-40 ~2022
-CVX      # $  290B  #27  energy, surged 2022
-KO       # $  270B  #28  staples, steady
-MRK      # $  230B  #29  pharma
-IBM      # $  230B  #30  large throughout
-CSCO     # $  230B  #31  tech infra, entire period
-WFC      # $  220B  #32  large US bank
-ACN      # $  220B  #33  consulting, grew into top-40 ~2022
-MCD      # $  215B  #34  consumer, steady
-ABT      # $  210B  #35  medtech, entire period
-PM       # $  210B  #36  tobacco, top-40 especially 2020-2022
-PEP      # $  200B  #37  staples, entire period
-TMO      # $  195B  #38  life sciences, grew steadily
-NOW      # $  195B  #39  entered top-40 ~2023
-GS       # $  195B  #40  investment bank, entire period
-
-# ── BUFFER: historically in top-40, may have dropped out ────
-INTC     # $   93B  was ~$250B in 2020 (top-15); collapsed post-2022
-CAT      # $  195B  borderline; entered top-40 ~2023-2024
-GE       # $  190B  restructured; was larger pre-2021 spin-offs
-DIS      # $  190B  was ~$300B in 2021, now borderline
-MS       # $  185B  investment bank, borderline 2020-2022
-
-# ── TOTAL: 45 tickers ────────────────────────────────────────
-#
-#  After running build_spx40_periods.py the script will write
-#  the precise list to spx40_required_tickers.txt, which may
-#  be slightly shorter (if some buffer tickers never cracked
-#  the top-40 in any single period).
-#
-#  Note: GOOG and GOOGL are both Alphabet share classes.
-#  Check whether your options data provider stores them under
-#  one or both symbols — often only GOOGL has liquid options.
-#
-#  Note: BRK-B options exist but can be illiquid. If your
-#  data source doesn't carry BRK-B, the script will simply
-#  skip it and the next stock fills the 40th slot.
-# ============================================================
+AAPL      # rank  1   2020-09-01  2026-02-16   $3786B
+AMZN      # rank  1   2020-09-01  2026-02-16   $2273B
+MSFT      # rank  1   2020-09-01  2026-02-16   $2964B
+NVDA      # rank  2   2020-09-01  2026-02-16   $3141B
+GOOGL     # rank  4   2020-09-01  2026-02-16   $1986B
+META      # rank  4   2020-09-01  2026-02-16   $1661B
+TSLA      # rank  4   2020-09-01  2026-02-16   $1063B
+UNH       # rank  4   2020-09-01  2026-02-16   $542B
+BRK-B     # rank  5   2020-09-01  2026-02-16   $955B
+AVGO      # rank  7   2021-12-27  2026-02-16   $926B
+CRM       # rank  7   2020-09-01  2026-02-16   $303B
+V         # rank  7   2020-09-01  2026-02-16   $609B
+PG        # rank  8   2020-09-01  2026-02-16   $426B
+ADBE      # rank  9   2020-09-01  2025-12-22   $232B
+HD        # rank  9   2020-09-01  2026-02-16   $446B
+LLY       # rank  9   2021-01-25  2026-02-16   $770B
+ORCL      # rank  9   2020-09-01  2026-02-16   $524B
+ACN       # rank 10   2020-09-01  2026-02-16   $253B
+DIS       # rank 10   2020-09-01  2025-09-29   $218B
+JPM       # rank 10   2020-09-01  2026-02-16   $736B
+WMT       # rank 10   2020-09-01  2026-02-16   $856B
+XOM       # rank 10   2021-02-22  2026-02-16   $480B
+MA        # rank 11   2020-09-01  2026-02-16   $478B
+JNJ       # rank 16   2020-09-01  2026-02-16   $388B
+NFLX      # rank 16   2020-09-01  2026-02-16   $325B
+BAC       # rank 17   2020-09-01  2026-02-16   $368B
+COST      # rank 18   2020-09-01  2026-02-16   $436B
+CMCSA     # rank 19   2020-09-01  2024-11-25   $202B
+NKE       # rank 19   2020-09-01  2023-12-25   $183B
+TMO       # rank 19   2020-09-01  2026-01-19   $259B
+ABBV      # rank 21   2020-09-01  2026-02-16   $367B
+GOOG      # rank 21   2021-07-12  2026-02-16   $349B
+CVX       # rank 22   2022-01-24  2026-02-16   $266B
+NOW       # rank 22   2020-09-01  2026-01-19   $218B
+PEP       # rank 22   2020-09-01  2026-02-16   $214B
+ABT       # rank 24   2020-09-01  2026-02-16   $218B
+INTU      # rank 25   2020-09-01  2025-12-22   $249B
+MRK       # rank 25   2020-09-01  2026-02-16   $242B
+KO        # rank 26   2020-09-01  2026-02-16   $278B
+QCOM      # rank 26   2020-09-01  2025-12-22   $219B
+BX        # rank 27   2021-09-06  2026-01-19   $249B
+IBM       # rank 28   2024-09-30  2026-02-16   $240B
+WFC       # rank 29   2024-11-25  2026-02-16   $251B
+VZ        # rank 31   2020-09-01  2022-07-11   $133B
+ISRG      # rank 32   2024-10-28  2025-12-22   $218B
+MCD       # rank 32   2020-09-01  2026-02-16   $222B
+TXN       # rank 32   2020-09-01  2026-02-16   $213B
+CHTR      # rank 33   2020-09-01  2021-10-04   $160B
+PM        # rank 33   2025-03-17  2026-02-16   $237B
+BA        # rank 34   2021-03-22  2021-04-19   $142B
+CSCO      # rank 34   2021-09-06  2026-02-16   $228B
+ELV       # rank 34   2022-04-18  2023-04-17   $149B
+MDT       # rank 34   2020-09-01  2021-10-04   $150B
+GS        # rank 35   2026-01-19  2026-02-16   $218B
+AXP       # rank 36   2025-09-29  2026-01-19   $223B
+PGR       # rank 37   2025-03-17  2025-05-12   $190B
+AMD       # rank 38   2025-10-27  2025-10-27   $228B
+CAT       # rank 38   2026-02-16  2026-02-16   $218B
+MS        # rank 39   2026-01-19  2026-01-19   $219B
+UBER      # rank 39   2025-07-07  2025-09-29   $208B
