@@ -325,6 +325,7 @@ def run_strategy(ticker: str, mode: str = "sell_put") -> list[dict]:
         # component so the premium reflects the true market cost.
         #   call intrinsic = max(0, stock_entry − strike)
         #   put  intrinsic = max(0, strike − stock_entry)
+        strike = rec["strike"]
         itm_correction = 0.0
         if premium is not None and strike is not None and stock_entry is not None:
             if _opt_type == "call":
@@ -338,8 +339,6 @@ def run_strategy(ticker: str, mode: str = "sell_put") -> list[dict]:
                 premium = premium + itm_correction
 
         # ── P&L ───────────────────────────────────────────────────────────────
-        strike = rec["strike"]
-
         if (signal and premium is not None
                 and stock_expiry is not None and strike is not None
                 and stock_entry is not None):
