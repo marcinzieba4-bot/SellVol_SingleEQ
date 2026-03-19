@@ -228,6 +228,9 @@ def run_strategy(ticker: str, mode: str = "sell_put") -> list[dict]:
     """
     mode = 'sell_put'          : sell put when last 4W positive (momentum)
     mode = 'buy_call'          : buy call when last 4W positive (momentum)
+    mode = 'buy_put'           : buy put when last 4W NEGATIVE (counter-momentum hedge)
+    mode = 'buy_momentum'      : buy call on positive, buy put on negative (always in)
+    mode = 'sell_spy_momentum' : sell put on positive, sell call on negative (always in)
     mode = 'sell_call_always'  : sell call every period, no signal filter
     mode = 'sell_call_negative': sell call only when last 4W was NEGATIVE
     """
@@ -272,10 +275,13 @@ def run_strategy(ticker: str, mode: str = "sell_put") -> list[dict]:
             up            = False
             signal_detail = "n/a (no prev price)"
 
+        have_signal_data = stock_entry is not None and stock_4w_ago is not None
         if mode == "sell_call_always":
-            signal = stock_entry is not None   # always trade (skip first period)
-        elif mode == "sell_call_negative":
-            signal = (stock_entry is not None and stock_4w_ago is not None and not up)
+            signal = stock_entry is not None
+        elif mode in ("sell_call_negative", "buy_put"):
+            signal = have_signal_data and not up
+        elif mode in ("buy_momentum", "sell_spy_momentum"):
+            signal = have_signal_data          # always in — direction encoded in trade
         else:  # sell_put / buy_call: trade when last 4W positive
             signal = up
 
@@ -301,8 +307,31 @@ def run_strategy(ticker: str, mode: str = "sell_put") -> list[dict]:
                 payoff     = max(0.0, stock_expiry - strike)
                 pnl_dollar = payoff - premium
                 trade      = "BUY CALL"
+            elif mode == "buy_put":
+                payoff     = max(0.0, strike - stock_expiry)
+                pnl_dollar = payoff - premium
+                trade      = "BUY PUT"
+            elif mode == "buy_momentum":
+                # up → buy call, down → buy put
+                if up:
+                    payoff     = max(0.0, stock_expiry - strike)
+                    pnl_dollar = payoff - premium
+                    trade      = "BUY CALL"
+                else:
+                    payoff     = max(0.0, strike - stock_expiry)
+                    pnl_dollar = payoff - premium
+                    trade      = "BUY PUT"
+            elif mode == "sell_spy_momentum":
+                # up → sell put, down → sell call
+                if up:
+                    payoff     = max(0.0, strike - stock_expiry)
+                    pnl_dollar = premium - payoff
+                    trade      = "SELL PUT"
+                else:
+                    payoff     = max(0.0, stock_expiry - strike)
+                    pnl_dollar = premium - payoff
+                    trade      = "SELL CALL"
             elif mode in ("sell_call_always", "sell_call_negative"):
-                # Sell call: receive premium, pay call payoff = max(0, expiry - strike)
                 payoff     = max(0.0, stock_expiry - strike)
                 pnl_dollar = premium - payoff
                 trade      = "SELL CALL"
