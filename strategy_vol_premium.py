@@ -464,10 +464,12 @@ def print_results(ticker: str, results: list[dict], mode: str = "sell_put") -> N
     )
 
     labels = {
-        "sell_put":          "Sell Put  (signal: last 4W positive)",
-        "buy_call":          "Buy Call  (signal: last 4W positive)",
-        "sell_call_always":  "Sell Call (every period, no filter)",
-        "sell_call_negative":"Sell Call (signal: last 4W negative)",
+        "sell_put":           "Sell Put  (signal: last 4W positive)",
+        "buy_call":           "Buy Call  (signal: last 4W positive)",
+        "sell_call_always":   "Sell Call (every period, no filter)",
+        "sell_call_negative": "Sell Call (signal: last 4W negative)",
+        "buy_momentum":       "Buy Call (↑) / Buy Put (↓)  — always in",
+        "sell_spy_momentum":  "Sell Put (↑) / Sell Call (↓) — always in",
     }
     strategy_label = labels.get(mode, mode)
     print(f"\n{'═'*W}")
@@ -481,16 +483,15 @@ def print_results(ticker: str, results: list[dict], mode: str = "sell_put") -> N
     no_trades    = 0
     total_pnl    = 0.0
     wins = losses = 0
-    active_trade = {"sell_put": "SELL PUT", "buy_call": "BUY CALL",
-                    "sell_call_always": "SELL CALL", "sell_call_negative": "SELL CALL"}.get(mode, "SELL PUT")
-
     for r in results:
         cumul += r["pnl_pct"]
         flag   = "*" if r["synthetic"] else " "
         carry  = "C" if r.get("carried") else " "
         sig    = "YES" if r["signal"] else "no "
 
-        if r["trade"] == active_trade:
+        is_trade = r["trade"] not in ("NO TRADE", "NO DATA")
+
+        if is_trade:
             total_trades += 1
             total_pnl    += r["pnl_pct"]
             wins   += 1 if r["pnl_pct"] >= 0 else 0
