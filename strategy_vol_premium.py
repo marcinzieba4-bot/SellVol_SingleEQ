@@ -231,6 +231,7 @@ def run_strategy(ticker: str, mode: str = "sell_put") -> list[dict]:
     mode = 'buy_put'           : buy put when last 4W NEGATIVE (counter-momentum hedge)
     mode = 'buy_momentum'      : buy call on positive, buy put on negative (always in)
     mode = 'sell_spy_momentum' : sell put on positive, sell call on negative (always in)
+    mode = 'sell_put_always'   : sell put every period, no signal filter
     mode = 'sell_call_always'  : sell call every period, no signal filter
     mode = 'sell_call_negative': sell call only when last 4W was NEGATIVE
     """
@@ -276,7 +277,7 @@ def run_strategy(ticker: str, mode: str = "sell_put") -> list[dict]:
             signal_detail = "n/a (no prev price)"
 
         have_signal_data = stock_entry is not None and stock_4w_ago is not None
-        if mode == "sell_call_always":
+        if mode in ("sell_call_always", "sell_put_always"):
             signal = stock_entry is not None
         elif mode in ("sell_call_negative", "buy_put"):
             signal = have_signal_data and not up
@@ -335,6 +336,10 @@ def run_strategy(ticker: str, mode: str = "sell_put") -> list[dict]:
                 payoff     = max(0.0, stock_expiry - strike)
                 pnl_dollar = premium - payoff
                 trade      = "SELL CALL"
+            elif mode == "sell_put_always":
+                payoff     = max(0.0, strike - stock_expiry)
+                pnl_dollar = premium - payoff
+                trade      = "SELL PUT"
             else:  # sell_put
                 payoff     = max(0.0, strike - stock_expiry)
                 pnl_dollar = premium - payoff
