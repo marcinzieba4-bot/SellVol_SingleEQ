@@ -41,6 +41,10 @@ from datetime import datetime, timedelta, date
 #   export AWS_SECRET_ACCESS_KEY=...
 #   export AWS_DEFAULT_REGION=eu-north-1          (or set OPTIONS_REGION)
 #   export OPTIONS_BUCKET=s3bucketmz              (optional override)
+# Minimum credible premium (dollars). Entries below this are treated as
+# data artefacts and replaced by the previous period's premium.
+MIN_PREMIUM_FLOOR = 0.05
+
 S3_BUCKET = os.environ.get("OPTIONS_BUCKET", "s3bucketmz")
 S3_PREFIX = os.environ.get("OPTIONS_PREFIX", "optionsData/")
 AWS_REGION = os.environ.get("OPTIONS_REGION", os.environ.get("AWS_DEFAULT_REGION", "eu-north-1"))
@@ -286,6 +290,16 @@ def run_strategy(ticker: str, mode: str = "sell_put") -> list[dict]:
         else:  # sell_put / buy_call: trade when last 4W positive
             signal = up
 
+        # Option type for this period (call vs put) — needed for intrinsic correction
+        if mode in ("buy_call", "sell_call_always", "sell_call_negative"):
+            _opt_type = "call"
+        elif mode in ("sell_put", "sell_put_always", "buy_put"):
+            _opt_type = "put"
+        elif mode in ("buy_momentum", "sell_spy_momentum"):
+            _opt_type = "call" if up else "put"
+        else:
+            _opt_type = "put"
+
         # ── Premium ───────────────────────────────────────────────────────────
         premium = rec["entry_premium"]
         carried = False
@@ -295,8 +309,33 @@ def run_strategy(ticker: str, mode: str = "sell_put") -> list[dict]:
         elif rec["synthetic"] and premium == last_prem:
             carried = True
 
+        # Replace near-zero premiums with the previous period's value — these
+        # are data artefacts (stale/zero quotes).
+        if premium is not None and premium < MIN_PREMIUM_FLOOR:
+            print(f"  [{rec['period_start']}] {ticker} WARNING: raw premium={premium:.4f} below floor "
+                  f"— replacing with prev={last_prem}")
+            premium = last_prem   # may still be None if no previous valid premium
+            carried = True
+
         if premium is not None:
             last_prem = premium
+
+        # ITM intrinsic correction: if the option is in-the-money at entry the
+        # data source may only store extrinsic (time) value.  Add the intrinsic
+        # component so the premium reflects the true market cost.
+        #   call intrinsic = max(0, stock_entry − strike)
+        #   put  intrinsic = max(0, strike − stock_entry)
+        itm_correction = 0.0
+        if premium is not None and strike is not None and stock_entry is not None:
+            if _opt_type == "call":
+                itm_correction = max(0.0, stock_entry - strike)
+            else:
+                itm_correction = max(0.0, strike - stock_entry)
+            if itm_correction > 0.01:
+                print(f"  [{rec['period_start']}] {ticker} ITM {_opt_type}: "
+                      f"stock={stock_entry:.2f} strike={strike:.2f} "
+                      f"→ adding intrinsic {itm_correction:.2f} to premium {premium:.2f}")
+                premium = premium + itm_correction
 
         # ── P&L ───────────────────────────────────────────────────────────────
         strike = rec["strike"]
@@ -362,6 +401,7 @@ def run_strategy(ticker: str, mode: str = "sell_put") -> list[dict]:
             "stock_expiry":  round(stock_expiry, 2) if stock_expiry else None,
             "strike":        strike,
             "premium":       round(premium, 2) if premium else None,
+            "itm_correction": round(itm_correction, 2),
             "carried":       carried,
             "payoff":        round(payoff, 2),
             "pnl_dollar":    round(pnl_dollar, 2),
