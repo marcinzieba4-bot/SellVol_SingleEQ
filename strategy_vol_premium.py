@@ -45,6 +45,13 @@ from datetime import datetime, timedelta, date
 # data artefacts and replaced by the previous period's premium.
 MIN_PREMIUM_FLOOR = 0.05
 
+# Minimum credible premium as a fraction of stock price.
+# A 30-day ATM put at 20% IV is ~2.3% of stock; settlement-era prices
+# (2-3 DTE) look like ~0.8% and are almost certainly from the wide-window
+# fallback in fetch_historical_backtest.py storing near-expiry data instead
+# of entry-date data.  Flag anything below 1.0% as suspicious.
+MIN_PREMIUM_PCT = 0.010   # 1.0% of stock price
+
 S3_BUCKET = os.environ.get("OPTIONS_BUCKET", "s3bucketmz")
 S3_PREFIX = os.environ.get("OPTIONS_PREFIX", "optionsData/")
 AWS_REGION = os.environ.get("OPTIONS_REGION", os.environ.get("AWS_DEFAULT_REGION", "eu-north-1"))
@@ -316,6 +323,18 @@ def run_strategy(ticker: str, mode: str = "sell_put") -> list[dict]:
                   f"— replacing with prev={last_prem}")
             premium = last_prem   # may still be None if no previous valid premium
             carried = True
+
+        # Warn when premium looks like a settlement-era (near-expiry) price rather
+        # than a proper ~30-DTE entry price.  An ATM 30-day put at 20% IV is ~2.3%
+        # of stock; anything under MIN_PREMIUM_PCT (1%) is a red flag.
+        # This does NOT auto-replace — it just prints a warning so you know which
+        # S3 periods need to be re-fetched with a proper entry-date snapshot.
+        if (premium is not None and stock_entry is not None
+                and stock_entry > 0 and not rec["synthetic"]
+                and premium / stock_entry < MIN_PREMIUM_PCT):
+            print(f"  [{rec['period_start']}] {ticker} LOW-PREMIUM WARNING: "
+                  f"premium=${premium:.2f} is only {premium/stock_entry*100:.2f}% of stock "
+                  f"${stock_entry:.2f} — likely settlement-era data (re-fetch recommended)")
 
         if premium is not None:
             last_prem = premium
