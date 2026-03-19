@@ -545,6 +545,10 @@ def download_historical_chain(
         df = pd.DataFrame([{
             'Symbol':        occ,
             'Strike':        strike,
+            # Price~ mirrors Barchart's column name so extract_atm_put picks
+            # it up and uses this as the authoritative underlying price for
+            # ATM selection — not the passed-in current_price argument.
+            'Price~':        stock_price,
             'Last':          row.get('lastPrice') or row.get('close') or row.get('last'),
             'Open':          row.get('openPrice') or row.get('open'),
             'High':          row.get('highPrice') or row.get('high'),

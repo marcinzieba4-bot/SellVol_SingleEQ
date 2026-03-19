@@ -551,7 +551,12 @@ def extract_atm_put(
 ) -> pd.DataFrame | None:
     """
     Load the Barchart options CSV and return a 1-row DataFrame with the
-    ATM put (strike closest to current_price).
+    ATM put (strike closest to current underlying price).
+
+    The underlying price is read directly from the CSV's "Price~" column
+    when present — this is Barchart's own authoritative stock price and is
+    always correct.  The `current_price` argument is only used as a fallback
+    when "Price~" is absent (e.g. in legacy / hand-built CSVs).
     """
     try:
         df = pd.read_csv(csv_path)
@@ -564,6 +569,25 @@ def extract_atm_put(
 
     # Normalise column names: lowercase, strip spaces
     df.columns = [c.strip().lower().replace(" ", "_") for c in df.columns]
+
+    # ── Underlying price ─────────────────────────────────────────────────────
+    # Barchart CSVs include a "Price~" column (normalised to "price~") which
+    # is the underlying stock price as recorded by Barchart.  Use it when
+    # available; it is always correct and avoids any yfinance adjustment issues.
+    price_col = next(
+        (c for c in df.columns if c.rstrip("~") in ("price", "underlying", "stock_price")),
+        None,
+    )
+    if price_col:
+        try:
+            p = pd.to_numeric(
+                df[price_col].astype(str).str.replace(",", "").str.replace("$", ""),
+                errors="coerce",
+            ).dropna()
+            if not p.empty and float(p.iloc[0]) > 0:
+                current_price = float(p.iloc[0])
+        except Exception:
+            pass  # fall back to the passed-in current_price
 
     # Identify strike column
     strike_col = next(
