@@ -1,0 +1,78 @@
+# ============================================================
+#  SPX TOP-40 OPTIONS DATA SHOPPING LIST
+#  Generated: March 2026
+#
+#  These are the tickers you need to download options data
+#  for to run build_spx40_periods.py / a top-40 backtest.
+#
+#  Logic: current top-40 by market cap + ~8 buffer tickers
+#  that were in the top-40 at some point during 2020–2026
+#  (due to historical market cap shifts).
+#
+#  Format: TICKER  |  ~current mktcap $B  |  why included
+# ============================================================
+
+# ── CERTAIN: current top-40 by market cap ────────────────────
+AAPL     # $3700B  #1   mega-cap, entire period
+NVDA     # $3100B  #2   surged from ~$400B in 2020; now #2
+MSFT     # $2900B  #3   mega-cap, entire period
+AMZN     # $2400B  #4   mega-cap, entire period
+GOOGL    # $2000B  #5   mega-cap, entire period
+META     # $1600B  #6   was Facebook; in top-40 from 2020
+TSLA     # $1000B  #7   surged 2020-2021, stayed large
+BRK-B    # $  930B  #8   steadily large, entire period
+AVGO     # $  900B  #9   surged significantly post-2022
+WMT      # $  780B  #10  steady large-cap
+JPM      # $  700B  #11  largest US bank
+LLY      # $  680B  #12  surged from ~$150B in 2020 (GLP-1 boom)
+V        # $  580B  #13  payments, entire period
+UNH      # $  530B  #14  health insurer, entire period
+XOM      # $  510B  #15  energy, surged 2022 with oil prices
+ORCL     # $  500B  #16  climbed into top-40 by 2022
+MA       # $  450B  #17  payments, entire period
+COST     # $  420B  #18  steady compounder
+NFLX     # $  400B  #19  volatile but stayed large
+PG       # $  390B  #20  staples, steady
+JNJ      # $  380B  #21  pharma/medtech, entire period
+HD       # $  380B  #22  home improvement, large throughout
+GOOG     # $  350B  #23  Alphabet Class C (separate from GOOGL)
+ABBV     # $  330B  #24  pharma, large throughout
+BAC      # $  330B  #25  large US bank
+CRM      # $  310B  #26  climbed into top-40 ~2022
+CVX      # $  290B  #27  energy, surged 2022
+KO       # $  270B  #28  staples, steady
+MRK      # $  230B  #29  pharma
+IBM      # $  230B  #30  large throughout
+CSCO     # $  230B  #31  tech infra, entire period
+WFC      # $  220B  #32  large US bank
+ACN      # $  220B  #33  consulting, grew into top-40 ~2022
+MCD      # $  215B  #34  consumer, steady
+ABT      # $  210B  #35  medtech, entire period
+PM       # $  210B  #36  tobacco, top-40 especially 2020-2022
+PEP      # $  200B  #37  staples, entire period
+TMO      # $  195B  #38  life sciences, grew steadily
+NOW      # $  195B  #39  entered top-40 ~2023
+GS       # $  195B  #40  investment bank, entire period
+
+# ── BUFFER: historically in top-40, may have dropped out ────
+INTC     # $   93B  was ~$250B in 2020 (top-15); collapsed post-2022
+CAT      # $  195B  borderline; entered top-40 ~2023-2024
+GE       # $  190B  restructured; was larger pre-2021 spin-offs
+DIS      # $  190B  was ~$300B in 2021, now borderline
+MS       # $  185B  investment bank, borderline 2020-2022
+
+# ── TOTAL: 45 tickers ────────────────────────────────────────
+#
+#  After running build_spx40_periods.py the script will write
+#  the precise list to spx40_required_tickers.txt, which may
+#  be slightly shorter (if some buffer tickers never cracked
+#  the top-40 in any single period).
+#
+#  Note: GOOG and GOOGL are both Alphabet share classes.
+#  Check whether your options data provider stores them under
+#  one or both symbols — often only GOOGL has liquid options.
+#
+#  Note: BRK-B options exist but can be illiquid. If your
+#  data source doesn't carry BRK-B, the script will simply
+#  skip it and the next stock fills the 40th slot.
+# ============================================================
