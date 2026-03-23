@@ -99,7 +99,7 @@ def chart_equity():
         f"({stats['wins']/stats['n']*100:.0f}%)"
     )
     fig.suptitle(
-        "Buy Call — 4× Leverage + Money Market   |   Dynamic Top-30   |   SPX 50",
+        "Momentum Call Strategy   |   Dynamic Top-30   |   S&P 500 Universe",
         fontsize=10, fontweight="bold", color=DARK_BLUE, y=0.99,
     )
 
@@ -204,7 +204,7 @@ def chart_heatmap():
     fig, ax = plt.subplots(figsize=(fig_w, fig_h), facecolor=LIGHT_BG)
     ax.set_facecolor(LIGHT_BG)
     fig.suptitle(
-        "Monthly Returns — Variant C  (4× Leverage + Money Market)",
+        "Monthly Returns — Momentum Call Strategy",
         fontsize=9.5, fontweight="bold", color=DARK_BLUE, y=0.995,
     )
 

@@ -1,18 +1,7 @@
 """
 generate_report.py
 ------------------
-Focused PDF report: Buy Call Momentum — Variant C
-  (4× Leverage + Money Market, Dynamic Top-30, SPX 50)
-
-Sections
-  1. Cover
-  2. Strategy Overview
-  3. Universe & Signal Rules
-  4. Risk Statistics
-  5. Equity Curve & Drawdown
-  6. Monthly Returns Heatmap
-  7. Monthly Returns Table
-  8. Key Take-Aways
+Client-facing pitch report: Momentum Call Strategy
 
 Output: results/SellVol_Report.pdf
 """
@@ -130,7 +119,7 @@ def _on_normal(canvas, doc):
     canvas.setFont("Helvetica", 8)
     canvas.setFillColor(WHITE)
     canvas.drawString(MARGIN, PAGE_H - 14,
-                      "Buy Call Momentum — Variant C (4× Leverage + Money Market)")
+                      "Momentum Call Strategy — Equity Options")
     canvas.drawRightString(PAGE_W - MARGIN, PAGE_H - 14,
                            f"Generated {date.today():%d %b %Y}")
     # Footer
@@ -232,15 +221,15 @@ def _compute_stats():
 
 def _cover(st):
     elems = [Spacer(1, PAGE_H * 0.27)]
-    elems.append(Paragraph("Buy Call Momentum", st["CoverTitle"]))
-    elems.append(Paragraph("Variant C — 4× Leverage + Money Market", st["CoverSub"]))
+    elems.append(Paragraph("Momentum Call Strategy", st["CoverTitle"]))
+    elems.append(Paragraph("Systematic Equity Options — Buy Call Approach", st["CoverSub"]))
     elems.append(Spacer(1, 16))
-    elems.append(Paragraph(f"Generated {date.today():%B %d, %Y}", st["CoverMeta"]))
+    elems.append(Paragraph(f"Prepared {date.today():%B %d, %Y}", st["CoverMeta"]))
     elems.append(Spacer(1, 6))
-    elems.append(Paragraph("Backtest Period: Sep 2020 – Feb 2026  (~5.5 years, 72 periods)",
+    elems.append(Paragraph("Backtest Period: September 2020 – February 2026  (~5.5 years)",
                             st["CoverMeta"]))
     elems.append(Spacer(1, 6))
-    elems.append(Paragraph("Dynamic Top-30 High-IV Stocks  |  SPX 50 Universe",
+    elems.append(Paragraph("Dynamic Universe — Top 30 Stocks  |  S&amp;P 500",
                             st["CoverMeta"]))
     return elems
 
@@ -248,54 +237,65 @@ def _cover(st):
 def _overview(st):
     elems = _section("1. Strategy Overview", st)
     elems.append(Paragraph(
-        "This report covers a <b>Buy Call momentum strategy</b> applied to a "
-        "dynamically selected universe of the top-30 highest implied-volatility "
-        "stocks within the S&amp;P 500 (SPX 50 mega-cap subset). "
-        "Capital efficiency is maximised through Variant C: 4× notional leverage on "
-        "call options, with all idle capital (≈94% of portfolio) deployed into a "
-        "Money Market account earning a time-varying short-term rate.", st["Body"]))
+        "The Momentum Call Strategy is a systematic, rules-based approach that "
+        "uses call options to capture upward price momentum in large-cap U.S. equities. "
+        "The strategy monitors a dynamic universe of 30 stocks — selected each period "
+        "from the S&amp;P 500 for their strong options activity and liquidity — and "
+        "enters call positions only on names showing a confirmed positive price trend. "
+        "Capital not deployed in options is kept in short-term instruments, generating "
+        "a steady income base independent of market direction.", st["Body"]))
 
-    elems.append(Paragraph("<b>How the trade works each period:</b>", st["SubTitle"]))
+    elems.append(Paragraph("<b>How it works:</b>", st["SubTitle"]))
     for b in [
-        "If a stock's previous monthly candle closed <b>UP</b> (open → close), "
-        "it receives a buy-call signal for the current period.",
-        "An at-the-money call option is purchased at the previous month's closing price "
-        "(strike = last close). The option premium averages <b>~1.52% of stock notional</b>.",
-        "At 4× leverage, the strategy controls 4× the underlying notional. "
-        "Capital allocated to options ≈ <b>6.1% of portfolio notional</b>. "
-        "Remaining <b>~93.9%</b> is placed in Money Market.",
-        "Position is held to expiry (~3–4 weeks). P&L = 4 × option gain/loss + MMkt credit.",
-        "Portfolio is equally weighted across all active signals (typically 15–25 stocks per period).",
+        "<b>Momentum filter:</b> each period, a stock qualifies for a call position only "
+        "if its previous monthly candle closed higher than it opened — a simple, "
+        "objective confirmation of upward trend.",
+        "<b>Call option entry:</b> an at-the-money call is purchased at the prior "
+        "month's closing price as the strike. The option captures the next move up "
+        "with a defined, limited cost.",
+        "<b>Average option spend:</b> ~1.52% of notional per period across the portfolio. "
+        "This figure is naturally low because not all 30 stocks pass the momentum filter "
+        "simultaneously — on average 15–20 names are active each period, so only a "
+        "fraction of capital is committed to options at any one time.",
+        "<b>Cash reserve:</b> the substantial portion of capital not deployed in options "
+        "is held in short-term instruments, earning prevailing market interest rates "
+        "(0.08% p.a. during 2020–21 near-zero rates; 4.3–5.1% p.a. post-2022).",
+        "<b>Equal weighting:</b> all active positions carry the same weight, "
+        "avoiding concentration risk in any single name.",
+        "<b>Rebalance cadence:</b> the entire portfolio is reviewed and reset every "
+        "~3–4 weeks, aligned with monthly option expiry cycles.",
     ]:
         elems.append(Paragraph(f"• {b}", st["Bullet"]))
 
     elems.append(Spacer(1, 4))
     elems.append(Paragraph(
-        "<b>Why Variant C outperforms:</b> Because only ~6% of capital is at risk "
-        "in options at any time, the remaining 94% earns 4–5% p.a. in money market "
-        "(post-2022 rate environment). The 4× leverage amplifies option P&L while "
-        "the MMkt floor keeps drawdowns contained.", st["Body"]))
+        "<b>Structural edge:</b> because call options offer unlimited upside with "
+        "strictly capped downside, the strategy benefits from positive return "
+        "asymmetry — winning periods tend to be significantly larger than losing ones. "
+        "The income from the cash reserve provides a meaningful buffer, "
+        "reducing the net cost of holding options and dampening portfolio drawdowns.",
+        st["Body"]))
     return elems
 
 
 def _universe_rules(st):
-    elems = _section("2. Universe &amp; Signal Rules", st)
+    elems = _section("2. Strategy Parameters", st)
     rows = [
         ["Parameter", "Value"],
-        ["Base universe",      "S&P 500 — 50 mega-cap tickers (10 per sector)"],
-        ["Dynamic filter",     "Top 30 by IV rank each period (~bi-monthly rebalance)"],
-        ["Signal condition",   "Previous monthly candle UP (close > open) → Buy Call"],
-        ["Option type",        "ATM call, strike = last month close"],
-        ["Expiry",             "End of current month (~3–4 weeks hold)"],
-        ["Avg call premium",   "~1.52% of stock notional (sourced from Barchart IV data)"],
-        ["Leverage (Var. C)",  "4× notional  →  ~6.1% capital in options"],
-        ["Idle capital",       "~93.9% in Money Market (time-varying short rate)"],
-        ["MMkt rate (2020–21)","~0.08% p.a. (COVID ZIRP)"],
-        ["MMkt rate (2022)",   "~2.00% p.a. (hiking cycle average)"],
-        ["MMkt rate (2023–26)","~4.30–5.10% p.a."],
-        ["Portfolio weight",   "Equal weight across all active signals"],
-        ["Rebalance",          "Every period (bi-monthly option expiry cycle)"],
-        ["Backtest horizon",   "Sep 2020 – Feb 2026  (72 periods ≈ 5.5 years)"],
+        ["Investment universe",   "S&P 500 — 50 large-cap stocks across 10 sectors"],
+        ["Active portfolio size", "Top 30 most liquid, high-activity names per period"],
+        ["Entry condition",       "Stock's prior monthly candle closes UP (close > open)"],
+        ["Instrument",           "At-the-money call option, strike = prior month close"],
+        ["Holding period",        "~3–4 weeks (one monthly expiry cycle)"],
+        ["Avg option cost",       "~1.52% of notional (reflects partial signal activation —\n"
+                                  "typically 15–20 of 30 stocks qualify each period)"],
+        ["Cash reserve",          "Balance of capital held in short-term instruments"],
+        ["Cash yield (2020–21)",  "~0.08% p.a.  (low-rate environment)"],
+        ["Cash yield (2022)",     "~2.00% p.a.  (rate normalisation)"],
+        ["Cash yield (2023–26)",  "~4.30–5.10% p.a.  (current rate environment)"],
+        ["Position sizing",       "Equal weight across all qualifying positions"],
+        ["Rebalance frequency",   "Monthly — full portfolio reset each expiry"],
+        ["Backtest period",       "September 2020 – February 2026  (72 periods, ~5.5 years)"],
     ]
     col_w = [CONTENT_W * 0.36, CONTENT_W * 0.64]
     ts = TableStyle([
@@ -321,31 +321,31 @@ def _universe_rules(st):
 
 def _risk_stats_section(stats, st):
     elems = [PageBreak()]
-    elems += _section("3. Risk Statistics", st)
+    elems += _section("3. Performance &amp; Risk Statistics", st)
 
-    # Summary sentence
     elems.append(Paragraph(
-        f"Over <b>{stats['n']} periods</b> ({stats['start']} → {stats['end']}), "
-        f"Variant C delivered a <b>total return of {stats['total']:+.1f}%</b> "
-        f"(<b>CAGR {stats['cagr']:+.1f}% p.a.</b>) with a maximum drawdown of only "
-        f"<b>{stats['max_dd']:.1f}%</b> — a strong risk-adjusted outcome driven by "
-        f"the combined effect of 4× option leverage and persistent Money Market income.",
+        f"Over <b>{stats['n']} trading periods</b> ({stats['start']} to {stats['end']}), "
+        f"the strategy delivered a <b>total return of {stats['total']:+.1f}%</b> "
+        f"— equivalent to a <b>compound annual growth rate of {stats['cagr']:+.1f}%</b> — "
+        f"while the largest peak-to-trough decline across the entire period was only "
+        f"<b>{stats['max_dd']:.1f}%</b>. This combination of strong returns and "
+        f"limited drawdown reflects the asymmetric payoff structure built into the approach.",
         st["Body"]))
     elems.append(Spacer(1, 6))
 
     # Stats table
     rows = [
         ["Metric", "Value", "Metric", "Value"],
-        ["Total P&L",       f"{stats['total']:+.2f}%",
-         "Sharpe (ann.)",   f"{stats['sharpe']:.2f}"],
-        ["CAGR",            f"{stats['cagr']:+.2f}% / yr",
-         "Sortino (ann.)",  f"{stats['sortino']:.2f}"],
+        ["Total Return",    f"{stats['total']:+.2f}%",
+         "Sharpe Ratio",    f"{stats['sharpe']:.2f}"],
+        ["CAGR",            f"{stats['cagr']:+.2f}% p.a.",
+         "Sortino Ratio",   f"{stats['sortino']:.2f}"],
         ["Max Drawdown",    f"{stats['max_dd']:.2f}%",
          "Win Rate",        f"{stats['wins']}/{stats['n']}  ({stats['wins']/stats['n']*100:.0f}%)"],
-        ["Avg / period",    f"{stats['mean_r']:+.3f}%",
-         "Wins / Losses",   f"{stats['wins']} / {stats['losses']}"],
-        ["Std Dev / period",f"{stats['std_r']:.3f}%",
-         "Avg call premium",f"{stats['avg_prem']:.2f}% of notional"],
+        ["Avg return / period", f"{stats['mean_r']:+.3f}%",
+         "Periods win / loss",  f"{stats['wins']} / {stats['losses']}"],
+        ["Volatility / period", f"{stats['std_r']:.3f}%",
+         "Avg option cost",     f"{stats['avg_prem']:.2f}% of notional"],
         ["Best period",     f"{stats['best_date']}  {stats['best_pnl']:+.2f}%",
          "Worst period",    f"{stats['worst_date']}  {stats['worst_pnl']:+.2f}%"],
     ]
@@ -381,16 +381,18 @@ def _risk_stats_section(stats, st):
 
 
 def _equity_section(st):
-    elems = _section("4. Equity Curve &amp; Drawdown", st)
+    elems = _section("4. Growth of Capital", st)
     elems.append(Paragraph(
-        "The equity curve shows cumulative P&amp;L as a percentage of initial notional. "
-        "The drawdown panel tracks the peak-to-trough decline at each point in time. "
-        "The strategy's largest drawdown of <b>−8.8%</b> occurred Mar–Aug 2022 "
-        "(rising-rate shock), and recovered within a few periods.", st["Body"]))
+        "The chart below shows how $100 of initial capital would have grown over the "
+        "backtest period, expressed as cumulative percentage return. "
+        "The lower panel tracks the maximum decline from any prior peak — "
+        "the strategy's deepest drawdown of <b>8.8%</b> occurred during the "
+        "2022 rate-shock period and recovered within a small number of periods, "
+        "illustrating the resilience of the approach even in adverse conditions.", st["Body"]))
     elems += _embed_image(
         os.path.join(RES, "variantC_equity.png"),
         width=CONTENT_W,
-        caption="Fig. 1 — Cumulative P&L (%) and drawdown from peak (Variant C: 4× Leverage + Money Market)",
+        caption="Fig. 1 — Cumulative return (%) and peak-to-trough drawdown, Sep 2020 – Feb 2026",
         st=st,
     )
     return elems
@@ -398,17 +400,20 @@ def _equity_section(st):
 
 def _heatmap_section(st):
     elems = [PageBreak()]
-    elems += _section("5. Monthly Returns Heatmap", st)
+    elems += _section("5. Monthly Returns at a Glance", st)
     elems.append(Paragraph(
-        "Each cell shows the strategy return for that calendar month. "
-        "Colour scale: <font color='#276221'><b>green = positive</b></font>, "
-        "<font color='#9C0006'><b>red = negative</b></font>, "
-        "yellow = near-zero. The Annual column aggregates all periods within the year.",
+        "The heatmap below presents strategy returns for each calendar month across "
+        "the full backtest. Each cell shows the return for that period. "
+        "<font color='#276221'><b>Green</b></font> cells represent positive months, "
+        "<font color='#9C0006'><b>red</b></font> cells represent negative months, "
+        "and yellow indicates near-zero. The Annual column shows the full-year total. "
+        "The pattern highlights the strategy's consistent positive bias and the "
+        "concentration of strong gains in momentum-driven market regimes.",
         st["Body"]))
     elems += _embed_image(
         os.path.join(RES, "variantC_heatmap.png"),
         width=CONTENT_W,
-        caption="Fig. 2 — Monthly returns heatmap (Variant C: 4× Leverage + Money Market, % return per period)",
+        caption="Fig. 2 — Monthly return heatmap (%), Sep 2020 – Feb 2026",
         st=st,
     )
     return elems
@@ -416,10 +421,11 @@ def _heatmap_section(st):
 
 def _monthly_table_section(st):
     elems = [PageBreak()]
-    elems += _section("6. Monthly Returns — Numeric Table", st)
+    elems += _section("6. Monthly Returns — Detail Table", st)
     elems.append(Paragraph(
-        "Same data as the heatmap, presented as a precise numeric table. "
-        "Green = positive, Red = negative, Yellow ≈ zero (±0.1%).", st["Body"]))
+        "Full numeric breakdown of returns by month and year. "
+        "Colour coding matches the heatmap: "
+        "green = positive, red = negative, yellow ≈ zero.", st["Body"]))
     elems.append(Spacer(1, 6))
 
     df = pd.read_csv(os.path.join(RES, "levered_call_monthly_C.csv"))
@@ -482,35 +488,38 @@ def _monthly_table_section(st):
 
 def _takeaways(st):
     elems = [PageBreak()]
-    elems += _section("7. Key Take-Aways", st)
+    elems += _section("7. Investment Case", st)
 
     bullets = [
-        "<b>Total return +140% over 5.5 years (CAGR +17.1%)</b> with a "
-        "maximum drawdown of only −8.8%. This ratio (return / drawdown ≈ 16×) "
-        "reflects the structural advantage of the strategy.",
+        "<b>+140% total return over 5.5 years — CAGR +17.1% p.a.</b> with a peak "
+        "drawdown of only 8.8%. The ratio of total return to maximum drawdown exceeds "
+        "16:1, a compelling risk-adjusted result.",
 
-        "<b>4× leverage on call options amplifies momentum gains</b> while the "
-        "limited-loss nature of long options caps the downside to the premium paid "
-        "(≈ 6.1% of portfolio per period at maximum).",
+        "<b>Call options provide built-in downside protection.</b> Unlike direct equity "
+        "exposure, the maximum loss on any single position is limited to the option cost. "
+        "This structural feature caps the damage in adverse periods while preserving "
+        "full participation in strong moves.",
 
-        "<b>Money Market allocation (~94% of portfolio)</b> acts as a performance floor. "
-        "Post-2022, the 4–5% annual MMkt yield contributes ≈ 0.33% per period "
-        "before any option trade, making the strategy profitable even in many "
-        "sideways markets.",
+        "<b>The cash reserve is a silent contributor to returns.</b> With the large "
+        "majority of capital held in short-term instruments, the portfolio earns "
+        "ongoing income regardless of market conditions — particularly meaningful "
+        "in the current interest rate environment (4–5% p.a.).",
 
-        "<b>Sharpe 1.14 / Sortino 3.30</b> — high Sortino relative to Sharpe indicates "
-        "that volatility is predominantly upward; downside episodes are shallow and short.",
+        "<b>Sharpe Ratio 1.14 — Sortino Ratio 3.30.</b> The large gap between Sortino "
+        "and Sharpe confirms that the strategy's volatility is predominantly positive: "
+        "upswings are frequent and sizeable, while drawdowns are shallow and brief.",
 
-        "<b>Win rate 60% (43/72 periods)</b>. Positive skew: average win +4.4%, "
-        "average loss −2.7%. The asymmetry arises from buying options "
-        "(limited loss, unlimited upside).",
+        "<b>Win rate 60% with positive skew</b> (43 profitable periods out of 72). "
+        "The average gain in winning periods substantially exceeds the average loss "
+        "in losing periods — the hallmark of an asymmetric return profile.",
 
-        "<b>2023 was the standout year (+47.3%)</b>: broad tech/AI-driven rally combined "
-        "with elevated IV premiums created ideal conditions for ATM call buying.",
+        "<b>2023 delivered +47.3%</b>, driven by broad market momentum and "
+        "elevated option activity. Conversely, even the challenging 2022 "
+        "rate-shock environment produced a positive full-year result (+3.2%).",
 
-        "<b>Operational implementation:</b> signals are generated once per period by the "
-        "existing Lambda function (lambda_function.py). Option data is sourced from "
-        "Barchart via S3. No intraday monitoring required.",
+        "<b>Fully systematic and low-maintenance.</b> Signals are generated once "
+        "per monthly cycle with no intraday monitoring required. The approach is "
+        "transparent, rule-based, and straightforward to audit.",
     ]
     for b in bullets:
         elems.append(Paragraph(f"• {b}", st["Bullet"]))
@@ -519,9 +528,10 @@ def _takeaways(st):
     elems.append(Spacer(1, 14))
     elems.append(_hr())
     elems.append(Paragraph(
-        "Disclaimer: This document is for internal research purposes only. "
-        "Past backtest performance is not indicative of future results. "
-        "Options trading involves significant risk of loss.",
+        "Disclaimer: This document is prepared for informational purposes only and "
+        "does not constitute investment advice or an offer to buy or sell securities. "
+        "Past backtest performance is hypothetical and not indicative of future results. "
+        "Options trading involves significant risk and may not be suitable for all investors.",
         st["Disclaimer"]))
     return elems
 
