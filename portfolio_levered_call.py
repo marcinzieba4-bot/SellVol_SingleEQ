@@ -135,6 +135,56 @@ if failed:
 print("  Pre-load complete.\n")
 
 
+# ── 2b. Per-ticker premium table ──────────────────────────────────────────────
+print("=" * 72)
+print("  PER-TICKER PREMIUM ANALYSIS  (buy_call, premium / stock_entry)")
+print("=" * 72)
+print(f"  {'Ticker':<8}  {'Periods':>7}  {'Traded':>6}  {'Trade%':>6}  "
+      f"{'AvgPrem(traded)':>15}  {'AvgPrem(all)':>12}  {'AvgPnL(traded)':>14}")
+print("  " + "─" * 74)
+
+ticker_prem_rows = []
+for ticker in sorted(cache.keys()):
+    pdata = cache[ticker]
+    all_periods  = list(pdata.values())
+    traded       = [d for d in all_periods if d["premium_pct"] > 0]
+    n_all        = len(all_periods)
+    n_traded     = len(traded)
+    trade_rate   = n_traded / n_all * 100 if n_all else 0
+    avg_prem_tr  = sum(d["premium_pct"] for d in traded) / n_traded if n_traded else 0
+    avg_prem_all = sum(d["premium_pct"] for d in all_periods) / n_all if n_all else 0
+    avg_pnl_tr   = sum(d["pnl_pct"]     for d in traded) / n_traded if n_traded else 0
+    ticker_prem_rows.append((ticker, n_all, n_traded, trade_rate,
+                             avg_prem_tr, avg_prem_all, avg_pnl_tr))
+    print(f"  {ticker:<8}  {n_all:>7}  {n_traded:>6}  {trade_rate:>5.0f}%  "
+          f"{avg_prem_tr:>14.2f}%  {avg_prem_all:>11.2f}%  {avg_pnl_tr:>13.3f}%")
+
+# Summary row
+all_tr  = [r for _, _, nt, _, ap, _, _ in ticker_prem_rows for _ in range(nt) for ap in [ap]]
+# simpler: weight by n_traded
+n_t_tot   = sum(r[2] for r in ticker_prem_rows)
+n_all_tot = sum(r[1] for r in ticker_prem_rows)
+wavg_tr   = (sum(r[2] * r[4] for r in ticker_prem_rows) / n_t_tot) if n_t_tot else 0
+wavg_all  = (sum(r[1] * r[5] for r in ticker_prem_rows) / n_all_tot) if n_all_tot else 0
+wavg_pnl  = (sum(r[2] * r[6] for r in ticker_prem_rows) / n_t_tot) if n_t_tot else 0
+print("  " + "─" * 74)
+print(f"  {'WEIGHTED AVG':<8}  {n_all_tot:>7}  {n_t_tot:>6}  "
+      f"{n_t_tot/n_all_tot*100:>5.0f}%  "
+      f"{wavg_tr:>14.2f}%  {wavg_all:>11.2f}%  {wavg_pnl:>13.3f}%")
+print()
+
+# Save to CSV
+prem_csv = os.path.join(OUT_DIR, "per_ticker_premium.csv")
+with open(prem_csv, "w", newline="") as f:
+    w = csv.writer(f)
+    w.writerow(["ticker","n_periods","n_traded","trade_pct",
+                "avg_premium_pct_traded","avg_premium_pct_all","avg_pnl_pct_traded"])
+    for row in ticker_prem_rows:
+        w.writerow([row[0], row[1], row[2], f"{row[3]:.1f}",
+                    f"{row[4]:.4f}", f"{row[5]:.4f}", f"{row[6]:.4f}"])
+print(f"  Per-ticker premium table saved → {prem_csv}\n")
+
+
 # ── 3. Top-30 tickers for a period ───────────────────────────────────────────
 def top30_for_period(period_start: str) -> list[str]:
     ranking = spx50.get(period_start, [])
