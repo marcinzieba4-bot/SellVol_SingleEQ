@@ -1,0 +1,90 @@
+Buy Call — Margin + Money-Market + 4× Leverage
+========================================================================
+
+Variant A — Buy Call original (P&L as % of notional, no idle-cash credit)
+─────────────────────────────────────────────────────────────────
+  Periods : 72  (~5.5 years, 2020-09-01 → 2026-02-16)
+  Avg premium / notional : 1.52%  → capital in options (1×): 1.52%  (4×): 6.1%   idle→MMkt: 93.9%
+  Total P&L    : +30.95%   |   CAGR       : +4.99%/yr
+  Max Drawdown : -2.38%  (2022-03-21 → 2022-08-08)
+  Sharpe (ann) : 1.00   |   Sortino    : 2.80
+  Win / Loss   : 33 / 30  (46% win rate)
+  Avg/period   : +0.430%   |   Std dev    : 1.544%
+  Best period  : 2020-11-30  +7.49%
+  Worst period : 2022-08-08  -2.00%
+
+  Monthly Returns (%):
+   Year    Jan    Feb    Mar    Apr    May    Jun    Jul    Aug    Sep    Oct    Nov    Dec  Annual
+  ─────  ─────  ─────  ─────  ─────  ─────  ─────  ─────  ─────  ─────  ─────  ─────  ─────  ──────
+    2020                                                           +0.0   -1.0   +7.2   +0.5    +6.7
+    2021   -0.4   -0.3   +1.6   -0.9   -0.2   +1.9   -0.1   +0.8   +0.1   +0.8   +3.2   -1.7    +4.7
+    2022   -0.0   +0.0   +2.5   -1.4   -0.5   -0.2   +1.7   -2.0   +0.0   +1.3   -1.0   -0.0    +0.3
+    2023   +1.2   +0.0   +0.9   +0.2   +2.6   +0.6   +0.6   +0.2   -0.1   +1.4   +3.0   +0.0   +10.6
+    2024   +2.5   -0.1   -0.8   -0.2   +0.5   +2.9   -1.7   +0.1   +0.1   +2.9   +0.5   -1.3    +5.3
+    2025   +0.1   +0.0   -0.2   +1.0   -1.4   +5.0   -0.1   +0.0   +0.1   -0.2   -0.8   -0.2    +3.3
+    2026   +0.0   +0.0                                                                          +0.0
+
+  Saved: results/levered_call_periods_A.csv
+         results/levered_call_monthly_A.csv
+
+Variant B — Buy Call 1× + Money Market on idle capital
+─────────────────────────────────────────────────────────────────
+  Periods : 72  (~5.5 years, 2020-09-01 → 2026-02-16)
+  Avg premium / notional : 1.52%  → capital in options (1×): 1.52%  (4×): 6.1%   idle→MMkt: 93.9%
+  Total P&L    : +47.90%   |   CAGR       : +7.32%/yr
+  Max Drawdown : -1.85%  (2022-07-11 → 2022-08-08)
+  Sharpe (ann) : 1.55   |   Sortino    : 5.06
+  Win / Loss   : 52 / 20  (72% win rate)
+  Avg/period   : +0.665%   |   Std dev    : 1.552%
+  Best period  : 2020-11-30  +7.49%
+  Worst period : 2022-08-08  -1.85%
+
+  Monthly Returns (%):
+   Year    Jan    Feb    Mar    Apr    May    Jun    Jul    Aug    Sep    Oct    Nov    Dec  Annual
+  ─────  ─────  ─────  ─────  ─────  ─────  ─────  ─────  ─────  ─────  ─────  ─────  ─────  ──────
+    2020                                                           +0.0   -1.0   +7.2   +0.5    +6.8
+    2021   -0.4   -0.3   +1.6   -0.9   -0.2   +1.9   -0.1   +0.8   +0.1   +0.8   +3.2   -1.7    +4.8
+    2022   +0.1   +0.2   +2.6   -1.3   -0.3   -0.1   +1.9   -1.8   +0.2   +1.6   -0.9   +0.1    +2.3
+    2023   +1.5   +0.4   +1.3   +0.6   +2.9   +1.0   +1.0   +0.6   +0.3   +2.2   +3.4   +0.4   +15.6
+    2024   +2.8   +0.3   -0.4   +0.1   +0.9   +3.3   -1.3   +0.5   +0.9   +3.3   +0.9   -0.9   +10.3
+    2025   +0.5   +0.3   +0.1   +1.3   -1.1   +5.3   +0.2   +0.4   +0.7   +0.2   -0.5   +0.1    +7.5
+    2026   +0.3   +0.3                                                                          +0.7
+
+  Saved: results/levered_call_periods_B.csv
+         results/levered_call_monthly_B.csv
+
+Variant C — Buy Call 4× Leverage + Money Market on remaining
+─────────────────────────────────────────────────────────────────
+  Periods : 72  (~5.5 years, 2020-09-01 → 2026-02-16)
+  Avg premium / notional : 1.52%  → capital in options (1×): 1.52%  (4×): 6.1%   idle→MMkt: 93.9%
+  Total P&L    : +140.10%   |   CAGR       : +17.13%/yr
+  Max Drawdown : -8.79%  (2022-03-21 → 2022-08-08)
+  Sharpe (ann) : 1.14   |   Sortino    : 3.30
+  Win / Loss   : 43 / 29  (60% win rate)
+  Avg/period   : +1.946%   |   Std dev    : 6.178%
+  Best period  : 2020-11-30  +29.96%
+  Worst period : 2022-08-08  -7.86%
+
+  Monthly Returns (%):
+   Year    Jan    Feb    Mar    Apr    May    Jun    Jul    Aug    Sep    Oct    Nov    Dec  Annual
+  ─────  ─────  ─────  ─────  ─────  ─────  ─────  ─────  ─────  ─────  ─────  ─────  ─────  ──────
+    2020                                                           +0.0   -3.9  +28.8   +2.1   +27.0
+    2021   -1.5   -1.0   +6.2   -3.6   -0.8   +7.7   -0.5   +3.2   +0.3   +3.0  +13.0   -7.0   +19.0
+    2022   -0.0   +0.2  +10.1   -5.6   -1.7   -0.8   +7.1   -7.9   +0.2   +5.6   -4.0   +0.1    +3.2
+    2023   +5.0   +0.4   +4.1   +1.3  +10.6   +2.7   +2.7   +1.3   -0.0   +6.5  +12.5   +0.4   +47.3
+    2024  +10.2   -0.1   -2.9   -0.6   +2.5  +11.9   -6.6   +0.8   +1.1  +12.1   +2.3   -4.9   +25.8
+    2025   +0.8   +0.3   -0.4   +4.2   -5.4  +20.2   -0.2   +0.5   +0.8   -0.4   -2.9   -0.4   +17.1
+    2026   +0.3   +0.3                                                                          +0.7
+
+  Saved: results/levered_call_periods_C.csv
+         results/levered_call_monthly_C.csv
+
+  Chart saved: results/levered_call_equity.png
+
+COMPARISON SUMMARY — Buy Call only
+========================================================================
+  Variant                                                      Total    CAGR   MaxDD  Sharpe  Sortino  Win%
+  ──────────────────────────────────────────────────────────────────────
+  Variant A — Buy Call original (P&L as % of notional, no idle-cash credit)   +31.0%   +5.0%    -2.4%    1.00     2.80   46%
+  Variant B — Buy Call 1× + Money Market on idle capital       +47.9%   +7.3%    -1.8%    1.55     5.06   72%
+  Variant C — Buy Call 4× Leverage + Money Market on remaining  +140.1%  +17.1%    -8.8%    1.14     3.30   60%

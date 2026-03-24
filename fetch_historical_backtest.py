@@ -124,19 +124,27 @@ def get_historical_price(ticker: str, target_date: date) -> float | None:
     """
     Return the ACTUAL (unadjusted) closing price of ticker on target_date.
 
-    yfinance always returns split-adjusted prices. To recover the actual
-    historical price (needed to match against Barchart's option strikes),
-    we multiply the adjusted price by the cumulative factor of all splits
-    that occurred AFTER target_date.
+    yfinance auto_adjust=True adjusts backward for BOTH splits AND dividends.
+    High-dividend stocks (BX, SCHW, MS, GS, ...) show prices significantly
+    below their actual trading price, leading to wrong ATM strikes.
+
+    auto_adjust=False adjusts for splits only (not dividends), which matches
+    the prices Barchart uses for its option chains.  We then un-apply any
+    splits that occurred AFTER target_date to recover the true historical price.
 
     Example for NVDA: 4:1 split 2021-07-20, 10:1 split 2024-06-10.
-    yfinance shows ~$3.61 for 2017-06-01; actual was ~$144.36 ($3.61 × 40).
+    auto_adjust=False shows ~$12.5 for Sep-2020 (÷40 for future splits).
+    We multiply ×40 → ~$500, the actual Sep-2020 trading price.
+
+    Example for BX: no splits after Sep-2020 → auto_adjust=False already
+    returns the correct ~$54 trading price (not the dividend-deflated ~$44
+    that auto_adjust=True produces).
     """
     start = target_date - timedelta(days=7)
     end   = target_date + timedelta(days=1)   # yfinance end is exclusive
     try:
         t = yf.Ticker(ticker)
-        df = t.history(start=start.isoformat(), end=end.isoformat(), auto_adjust=True)
+        df = t.history(start=start.isoformat(), end=end.isoformat(), auto_adjust=False)
         if df.empty:
             return None
         df.index = pd.to_datetime(df.index).date
@@ -241,6 +249,17 @@ def _candidate_strikes(price: float, n: int = 15) -> list[float]:
     return sorted(out, key=lambda s: abs(s - price))[:n]
 
 
+# Maximum days between the requested observation date and the actual data
+# date found via the wide-window fallback.  Beyond this the period start is
+# re-labelled to match the actual data date (the nominal obs_date is wrong).
+MAX_OBS_OFFSET = 3   # days — tight window for narrow queries
+
+# Minimum DTE the data row must have relative to expiry.  A row within 5 days
+# of expiry is settlement-era and has almost no time value — it is not a
+# usable entry price regardless of how close it is to obs_date.
+MIN_ENTRY_DTE = 5
+
+
 def _fetch_option_price_api(
     driver: webdriver.Chrome,
     ticker: str,
@@ -248,10 +267,13 @@ def _fetch_option_price_api(
     strike: float,
     obs_date: date,
     diag: bool = False,
-) -> dict | None:
+) -> tuple[dict, date] | None:
     """
     Try multiple Barchart API endpoints for one specific put contract.
-    Returns an OHLC dict or None.  Set diag=True to print raw responses.
+    Returns (row_dict, actual_data_date) or None.
+    actual_data_date is the date the row was recorded — may differ from obs_date
+    when the wide-window fallback is used.
+    Set diag=True to print raw responses.
     """
     bc_sym = _build_bc_symbol(ticker, expiry, strike)
     occ    = _build_occ(ticker, expiry, strike)
@@ -350,14 +372,16 @@ def _fetch_option_price_api(
             print(f"\n    [diag-{chr(65+i)}] {url[url.find('?')-20:url.find('?')+60]}... → {preview}")
         row = _rows_for_date(data)
         if row:
-            return row
+            d_found = _parse_trade_date(row) or obs_date
+            return row, d_found
 
     # ── Wide-window retry ────────────────────────────────────────────────────
-    # All narrow-window queries returned count:0, total:N — the symbol exists
-    # but Barchart only stored data near expiry (common for 2020–2021 options).
-    # Fetch the full lifetime of the contract and pick the closest valid row.
+    # All narrow-window queries failed — fetch the full contract lifetime and
+    # pick the earliest valid row that has >= MIN_ENTRY_DTE days to expiry.
+    # If only near-expiry rows exist we reject them; the period will be skipped
+    # so we don't store a settlement price under a wrong observation date.
     wide_start = (expiry - timedelta(days=90)).isoformat()
-    wide_end   = expiry.isoformat()
+    wide_end   = (expiry - timedelta(days=MIN_ENTRY_DTE)).isoformat()
     wide_url   = (f"/proxies/core-api/v1/historical/get"
                   f"?symbol={bc_sym}&startDate={wide_start}&endDate={wide_end}"
                   f"&raw=1&fields={bc_fields}")
@@ -368,9 +392,15 @@ def _fetch_option_price_api(
     row = _rows_for_date(wide_data, max_delta=timedelta.max)
     if row:
         d_found = _parse_trade_date(row)
-        if diag:
-            print(f"    [diag-wide] accepted row dated {d_found} for obs_date {obs_date}")
-        return row
+        if d_found and (expiry - d_found).days < MIN_ENTRY_DTE:
+            print(f"\n    [wide] rejected row dated {d_found} — only "
+                  f"{(expiry - d_found).days} DTE, settlement-era data")
+            return None
+        d_found = d_found or obs_date
+        if d_found != obs_date:
+            print(f"\n    [wide] found data at {d_found} (requested {obs_date}) "
+                  f"— period start will be re-labelled")
+        return row, d_found
 
     return None
 
@@ -540,7 +570,7 @@ def download_historical_chain(
     expiry: date,
     observation_date: date,
     stock_price: float,
-) -> tuple[Path | None, str]:
+) -> tuple[Path | None, str, date]:
     """
     Find the ATM put for (ticker, expiry) as of observation_date and return
     its closing price on that date.
@@ -550,7 +580,11 @@ def download_historical_chain(
     Phase 2 (slow): navigate to the actual price-history page and scrape
                     the rendered table for the top-5 closest strikes.
 
-    Returns (csv_path, "entry_snapshot") or (None, "failed").
+    Returns (csv_path, source, actual_obs_date).
+    actual_obs_date is the real date the data was recorded — equals
+    observation_date when found in the narrow window, but may differ
+    (and will be printed as a warning) when the wide-window fallback is used.
+    Returns (None, "failed", observation_date) on failure.
     """
     # Ensure we are on a barchart.com page so relative fetch() URLs work
     if 'barchart.com' not in driver.current_url:
@@ -562,12 +596,15 @@ def download_historical_chain(
 
     candidates = _candidate_strikes(stock_price)
 
-    def _save(strike: float, row: dict) -> tuple[Path, str]:
+    def _save(strike: float, row: dict, actual_date: date) -> tuple[Path, str]:
         occ = _build_occ(ticker, expiry, strike)
-        # Accept both naming conventions (Barchart XHR uses *Price suffixes)
         df = pd.DataFrame([{
             'Symbol':        occ,
             'Strike':        strike,
+            # Price~ mirrors Barchart's column name so extract_atm_put picks
+            # it up and uses this as the authoritative underlying price for
+            # ATM selection — not the passed-in current_price argument.
+            'Price~':        stock_price,
             'Last':          row.get('lastPrice') or row.get('close') or row.get('last'),
             'Open':          row.get('openPrice') or row.get('open'),
             'High':          row.get('highPrice') or row.get('high'),
@@ -576,18 +613,19 @@ def download_historical_chain(
             'Open Interest': row.get('openInterest'),
             'IV':            row.get('impliedVolatility') or row.get('volatility'),
         }])
-        out = download_dir / f'{ticker}_{expiry}_{observation_date}_hist.csv'
+        # Filename uses the actual data date, not the nominal observation date
+        out = download_dir / f'{ticker}_{expiry}_{actual_date}_hist.csv'
         df.to_csv(out, index=False)
         return out, "entry_snapshot"
 
     # ── Phase 1: API (fast, no navigation) ──────────────────────────────
     for i, strike in enumerate(candidates):
-        # Print full diagnostics only for the single closest candidate
-        row = _fetch_option_price_api(
+        result = _fetch_option_price_api(
             driver, ticker, expiry, strike, observation_date, diag=(i == 0)
         )
-        if row:
-            return _save(strike, row)
+        if result:
+            row, actual_date = result
+            return *_save(strike, row, actual_date), actual_date
 
     # ── Phase 2: page scrape (guaranteed if page has data) ───────────────
     print(f"\n    [diag] Phase-1 API failed — scraping price-history page")
@@ -596,9 +634,10 @@ def download_historical_chain(
             driver, ticker, expiry, strike, observation_date, download_dir
         )
         if row:
-            return _save(strike, row)
+            # Page scrape has no reliable date extraction — use obs_date
+            return *_save(strike, row, observation_date), observation_date
 
-    return None, "failed"
+    return None, "failed", observation_date
 
 
 # ---------------------------------------------------------------------------
@@ -620,7 +659,9 @@ def process_month(
     dte = (expiry - observation_date).days
     print(f"  {observation_date}  expiry={expiry}  ({dte} DTE)", end="  ")
 
-    # 1. Historical stock price
+    # 1. Historical stock price (for the nominal observation date — used to
+    #    determine ATM strike candidates; may be re-fetched below if the actual
+    #    data date differs significantly)
     price = get_historical_price(ticker, observation_date)
     if price is None:
         print("SKIP (no price data)")
@@ -628,12 +669,22 @@ def process_month(
     print(f"${price:.2f}", end="  ")
 
     # 2. Download chain
-    csv_path, source = download_historical_chain(
+    csv_path, source, actual_obs_date = download_historical_chain(
         driver, download_dir, ticker, expiry, observation_date, price
     )
     if csv_path is None:
         print("FAILED (no download)")
         return None
+
+    # If the data was found at a different date, re-label and re-fetch price
+    if actual_obs_date != observation_date:
+        print(f"\n    NOTE: data date {actual_obs_date} ≠ requested {observation_date} "
+              f"— using {actual_obs_date} as period start")
+        actual_price = get_historical_price(ticker, actual_obs_date)
+        if actual_price is not None:
+            price = actual_price
+        observation_date = actual_obs_date
+        dte = (expiry - observation_date).days
 
     print(f"[{source}]", end="  ")
 
