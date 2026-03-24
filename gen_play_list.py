@@ -18,7 +18,6 @@ Signal logic (mirrors backtest, S3-native):
 Output: current_play_list.json
 """
 
-import json
 import os
 import sys
 from datetime import datetime
@@ -138,24 +137,39 @@ def main():
         print("\nNo qualifying stocks found.")
         sys.exit(1)
 
-    # ── save ──────────────────────────────────────────────────────────────────
-    output = {
-        "generated_at":    datetime.utcnow().isoformat(timespec="seconds") + "Z",
-        "next_entry":      NEXT_ENTRY,
-        "next_expiry":     NEXT_EXPIRY,
-        "dte":             DTE,
-        "premium_source":  "s3_last_period",
-        "n_plays":         len(plays),
-        "n_no_signal":     len(no_signal),
-        "n_skipped":       len(skipped),
-        "equal_weight":    round(1.0 / len(plays), 4) if plays else 0,
-        "plays":           plays,
-        "no_signal":       no_signal,
-    }
-
-    out_path = os.path.join(os.path.dirname(__file__), "current_play_list.json")
-    with open(out_path, "w") as f:
-        json.dump(output, f, indent=2)
+    # ── save CSV ──────────────────────────────────────────────────────────────
+    import csv as csv_mod
+    out_path = os.path.join(os.path.dirname(__file__), "current_play_list.csv")
+    fieldnames = [
+        "ticker",
+        "entry_date",
+        "expiry_date",
+        "dte",
+        "stock_price_ref",   # stock price from last S3 period
+        "strike",            # strike from last S3 period
+        "premium_ref",       # S3 premium (per share, reference)
+        "premium_ref_pct",   # premium_ref as % of stock_price_ref
+        "premium_paid",      # ← fill in: actual premium you transacted
+        "weight",
+        "s3_period",         # which S3 period the premium came from
+    ]
+    with open(out_path, "w", newline="") as f:
+        w = csv_mod.DictWriter(f, fieldnames=fieldnames)
+        w.writeheader()
+        for p in plays:
+            w.writerow({
+                "ticker":           p["ticker"],
+                "entry_date":       NEXT_ENTRY,
+                "expiry_date":      NEXT_EXPIRY,
+                "dte":              DTE,
+                "stock_price_ref":  p["stock_price_n"],
+                "strike":           p["strike"],
+                "premium_ref":      p["premium"],
+                "premium_ref_pct":  p["premium_pct"],
+                "premium_paid":     "",        # fill in after execution
+                "weight":           p["weight"],
+                "s3_period":        p["period_n"],
+            })
 
     # ── print table ───────────────────────────────────────────────────────────
     print(f"\n  {'TICKER':<7} {'PREV_RET%':>9} {'S3_PRICE':>9} {'STRIKE':>8} "
@@ -173,7 +187,8 @@ def main():
     print(f"  {len(no_signal)} stocks: no signal (prev return <= 0%)")
     if skipped:
         print(f"  {len(skipped)} skipped (data issues): {', '.join(skipped)}")
-    print(f"\n  Saved → {out_path}\n")
+    print(f"\n  Saved → {out_path}")
+    print("  Fill in 'premium_paid' column after you execute the trades.\n")
 
 
 if __name__ == "__main__":
