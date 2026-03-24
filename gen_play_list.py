@@ -2,190 +2,179 @@
 """
 Generate current_play_list.json for the next buy-call period.
 
-Signal logic (mirrors backtest):
-  - Measure return of each stock over the MOST RECENTLY EXPIRED period
-    (2026-02-13 → 2026-03-13)
-  - If return >= MIN_RETURN_PCT  → BUY CALL next period
-  - Strike = today's closing price (ATM call)
-  - Premium = Black-Scholes call estimate using VIX-based IV model
+Signal logic (mirrors backtest, S3-native):
+  For each ticker, load all real S3 option periods.
+  Signal period = second-to-last S3 period  (N-1)
+  Data period   = last S3 period             (N)
+
+  If stock_price[N] > stock_price[N-1]  →  BUY CALL
+  (= positive return during the most recently recorded period)
+
+  Premium  = entry_premium from period N (real S3 data, not BS estimate)
+  Strike   = stock_price from period N   (ATM reference at last observation)
+
+  No minimum-return filter applied — any positive return qualifies.
 
 Output: current_play_list.json
 """
 
 import json
-import math
-import warnings
-from datetime import date, datetime
-
-import pandas as pd
-import yfinance as yf
-
-warnings.filterwarnings("ignore")
-
-# ── shared constants ──────────────────────────────────────────────────────────
-from backtest import TICKERS, STOCK_RV_RATIOS, IV_SCALE, _norm_cdf
-
-# ── config ────────────────────────────────────────────────────────────────────
-# Period whose return drives the signal for the NEXT play
-SIGNAL_PERIOD_START = "2026-02-13"
-SIGNAL_PERIOD_END   = "2026-03-13"
-
-# Next play window (approximate — last Friday of March → last Friday of April)
-NEXT_ENTRY          = "2026-03-28"   # last Friday of March 2026
-NEXT_EXPIRY         = "2026-04-24"   # last Friday of April 2026
-DTE                 = 27             # days
-
-MIN_RETURN_PCT      = 2.0            # minimum prev-period return to qualify
-
-
-# ── Black-Scholes call (full, not ATM-only) ───────────────────────────────────
-def bs_call(S, K, T_years, iv_pct, r_pct):
-    """Call price in dollars."""
-    if T_years <= 0:
-        return max(S - K, 0.0)
-    sigma = iv_pct / 100.0
-    r     = r_pct  / 100.0
-    sqrtT = math.sqrt(T_years)
-    d1 = (math.log(S / K) + (r + 0.5 * sigma**2) * T_years) / (sigma * sqrtT)
-    d2 = d1 - sigma * sqrtT
-    call = S * _norm_cdf(d1) - K * math.exp(-r * T_years) * _norm_cdf(d2)
-    return max(call, 0.0)
-
-
-def iv_estimate(vix, ticker):
-    rv = STOCK_RV_RATIOS.get(ticker, sum(STOCK_RV_RATIOS.values()) / len(STOCK_RV_RATIOS))
-    return vix * rv * IV_SCALE
-
-
-# ── step 1: fetch signal-period prices for all tickers ───────────────────────
-print(f"Fetching signal-period returns ({SIGNAL_PERIOD_START} → {SIGNAL_PERIOD_END}) ...")
-raw = yf.download(
-    TICKERS,
-    start=SIGNAL_PERIOD_START,
-    end=(pd.Timestamp(SIGNAL_PERIOD_END) + pd.Timedelta(days=1)).strftime("%Y-%m-%d"),
-    auto_adjust=True,
-    progress=False,
-)
-if isinstance(raw.columns, pd.MultiIndex):
-    closes = raw["Close"]
-else:
-    closes = raw
-
-signal_returns = {}
-for t in TICKERS:
-    try:
-        ser = closes[t].dropna() if t in closes.columns else closes.dropna()
-        if len(ser) >= 2:
-            entry_px = float(ser.iloc[0])
-            exit_px  = float(ser.iloc[-1])
-            signal_returns[t] = (exit_px - entry_px) / entry_px * 100.0
-    except Exception as e:
-        print(f"  WARNING: {t} signal return failed: {e}")
-
-print(f"  Returns computed for {len(signal_returns)}/{len(TICKERS)} tickers")
-
-
-# ── step 2: fetch VIX & RFR ───────────────────────────────────────────────────
-print("Fetching VIX & risk-free rate ...")
-vix_raw = yf.download("^VIX", period="5d", auto_adjust=False, progress=False)
-rfr_raw = yf.download("^IRX", period="5d", auto_adjust=False, progress=False)
-for df in (vix_raw, rfr_raw):
-    if isinstance(df.columns, pd.MultiIndex):
-        df.columns = df.columns.get_level_values(0)
-vix = float(vix_raw["Close"].dropna().iloc[-1]) if not vix_raw.empty else 20.0
-rfr = float(rfr_raw["Close"].dropna().iloc[-1]) if not rfr_raw.empty else 4.0
-print(f"  VIX={vix:.1f}  RFR={rfr:.2f}%")
-
-
-# ── step 3: fetch today's prices for qualifying tickers ──────────────────────
-qualifiers = sorted(
-    [t for t, r in signal_returns.items() if r >= MIN_RETURN_PCT],
-    key=lambda t: -signal_returns[t],
-)
-print(f"\nQualifying tickers (prev return >= {MIN_RETURN_PCT}%): {len(qualifiers)}")
-
-print(f"Fetching today's prices for {len(qualifiers)} tickers ...")
-px_raw = yf.download(qualifiers, period="5d", auto_adjust=True, progress=False)
-if isinstance(px_raw.columns, pd.MultiIndex):
-    px_closes = px_raw["Close"]
-else:
-    px_closes = px_raw
-
-today_prices = {}
-for t in qualifiers:
-    try:
-        col = px_closes[t] if t in px_closes.columns else px_closes
-        today_prices[t] = float(col.dropna().iloc[-1])
-    except Exception:
-        pass
-
-
-# ── step 4: build play list ───────────────────────────────────────────────────
-T_years = DTE / 365.0
-weight  = 1.0 / len(qualifiers) if qualifiers else 0.0
-
-plays = []
-for t in qualifiers:
-    price = today_prices.get(t)
-    if price is None:
-        print(f"  WARNING: no live price for {t}, skipping")
-        continue
-
-    iv_pct   = iv_estimate(vix, t)
-    call_px  = bs_call(price, price, T_years, iv_pct, rfr)   # ATM call
-    prem_pct = call_px / price * 100.0
-
-    plays.append({
-        "ticker":            t,
-        "signal":            "buy_call",
-        "prev_period_return": round(signal_returns[t], 2),
-        "signal_period":     f"{SIGNAL_PERIOD_START} → {SIGNAL_PERIOD_END}",
-        "entry_date":        NEXT_ENTRY,
-        "expiry_date":       NEXT_EXPIRY,
-        "dte":               DTE,
-        "current_price":     round(price, 2),
-        "strike":            round(price, 2),     # ATM = current price
-        "iv_pct":            round(iv_pct, 2),
-        "premium_per_share": round(call_px, 2),
-        "premium_pct":       round(prem_pct, 3),  # % of notional
-        "weight":            round(weight, 4),
-    })
-
-# ── step 5: save ──────────────────────────────────────────────────────────────
-output = {
-    "generated_at":      datetime.utcnow().isoformat(timespec="seconds") + "Z",
-    "signal_period":     f"{SIGNAL_PERIOD_START} → {SIGNAL_PERIOD_END}",
-    "next_entry":        NEXT_ENTRY,
-    "next_expiry":       NEXT_EXPIRY,
-    "dte":               DTE,
-    "vix":               round(vix, 2),
-    "rfr_pct":           round(rfr, 2),
-    "min_return_filter": MIN_RETURN_PCT,
-    "n_plays":           len(plays),
-    "equal_weight":      round(weight, 4),
-    "plays":             plays,
-}
-
 import os
-out_path = os.path.join(os.path.dirname(__file__), "current_play_list.json")
-with open(out_path, "w") as f:
-    json.dump(output, f, indent=2)
+import sys
+from datetime import datetime
 
-# ── print summary ─────────────────────────────────────────────────────────────
-print(f"\n{'═'*65}")
-print(f"  BUY-CALL PLAY LIST  —  entry {NEXT_ENTRY}  expiry {NEXT_EXPIRY}  ({DTE} DTE)")
-print(f"  Signal: prev-period return >= {MIN_RETURN_PCT}%  |  VIX={vix:.1f}  RFR={rfr:.2f}%")
-print(f"  {len(plays)} stocks  |  equal weight {weight*100:.1f}% each")
-print(f"{'═'*65}")
-print(f"  {'TICKER':<7} {'PREV_RET%':>9} {'PRICE':>8} {'STRIKE':>8} "
-      f"{'IV%':>6} {'PREM$':>7} {'PREM%':>7}")
-print(f"  {'─'*7} {'─'*9} {'─'*8} {'─'*8} {'─'*6} {'─'*7} {'─'*7}")
-for p in plays:
-    print(f"  {p['ticker']:<7} {p['prev_period_return']:>+9.2f} "
-          f"{p['current_price']:>8.2f} {p['strike']:>8.2f} "
-          f"{p['iv_pct']:>6.1f} {p['premium_per_share']:>7.2f} "
-          f"{p['premium_pct']:>7.3f}%")
+# ── shared S3 loading from strategy_vol_premium ───────────────────────────────
+from strategy_vol_premium import load_s3_periods, fill_gaps, MIN_PREMIUM_FLOOR, MIN_PREMIUM_PCT
 
-avg_prem = sum(p["premium_pct"] for p in plays) / len(plays) if plays else 0
-print(f"\n  Avg premium: {avg_prem:.3f}%  of notional per position")
-print(f"\n  Saved → {out_path}")
+from backtest import TICKERS
+
+# ── Next play window (last Friday of March → last Friday of April 2026) ───────
+NEXT_ENTRY  = "2026-03-28"
+NEXT_EXPIRY = "2026-04-24"
+DTE         = 27
+
+# ──────────────────────────────────────────────────────────────────────────────
+
+def build_play_list() -> list[dict]:
+    plays      = []
+    no_signal  = []
+    skipped    = []
+
+    for ticker in TICKERS:
+        # ── load S3 periods ───────────────────────────────────────────────────
+        try:
+            records = load_s3_periods(ticker)
+        except Exception as e:
+            print(f"  ERROR loading S3 for {ticker}: {e}")
+            skipped.append(ticker)
+            continue
+
+        if not records:
+            print(f"  WARNING: no S3 data for {ticker}")
+            skipped.append(ticker)
+            continue
+
+        # fill gaps so period numbering is stable (but skip synthetics for signal)
+        records = fill_gaps(records)
+        real    = [r for r in records if not r.get("synthetic")]
+
+        if len(real) < 2:
+            print(f"  WARNING: fewer than 2 real periods for {ticker}, skipping")
+            skipped.append(ticker)
+            continue
+
+        period_n1 = real[-2]   # signal: one before last
+        period_n  = real[-1]   # data:   most recent
+
+        px_n1 = period_n1.get("stock_price")
+        px_n  = period_n.get("stock_price")
+
+        if px_n1 is None or px_n is None or px_n1 <= 0:
+            print(f"  WARNING: missing prices for {ticker}, skipping")
+            skipped.append(ticker)
+            continue
+
+        prev_return = (px_n - px_n1) / px_n1 * 100.0
+
+        if prev_return <= 0:
+            no_signal.append({
+                "ticker":      ticker,
+                "prev_return": round(prev_return, 2),
+                "period_n1":   period_n1["period_start"],
+                "period_n":    period_n["period_start"],
+            })
+            continue
+
+        # ── extract premium from S3 period N ─────────────────────────────────
+        raw_prem = period_n.get("entry_premium")
+        strike   = period_n.get("strike") or px_n  # fallback to stock price if no strike
+
+        if raw_prem is None or raw_prem < MIN_PREMIUM_FLOOR:
+            print(f"  WARNING: {ticker} premium {raw_prem} below floor, skipping")
+            skipped.append(ticker)
+            continue
+
+        prem_pct = raw_prem / px_n * 100.0
+        if prem_pct < MIN_PREMIUM_PCT * 100:
+            print(f"  WARNING: {ticker} premium_pct {prem_pct:.2f}% too low (near-expiry data?), skipping")
+            skipped.append(ticker)
+            continue
+
+        plays.append({
+            "ticker":        ticker,
+            "signal":        "buy_call",
+            "prev_return":   round(prev_return, 2),
+            "period_n1":     period_n1["period_start"],
+            "period_n":      period_n["period_start"],
+            "period_n_end":  period_n["period_end"],
+            "stock_price_n": round(px_n,    2),
+            "strike":        round(strike,  2),
+            "premium":       round(raw_prem, 2),   # dollars per share
+            "premium_pct":   round(prem_pct, 3),   # % of stock price at last obs
+        })
+
+    # ── sort by prev_return descending ───────────────────────────────────────
+    plays.sort(key=lambda x: -x["prev_return"])
+
+    # ── equal weight across qualifying plays ──────────────────────────────────
+    weight = 1.0 / len(plays) if plays else 0.0
+    for p in plays:
+        p["weight"] = round(weight, 4)
+
+    return plays, no_signal, skipped
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+
+def main():
+    print(f"\n{'═'*65}")
+    print("  Generating buy-call play list from S3 options data ...")
+    print(f"  Next play: {NEXT_ENTRY} → {NEXT_EXPIRY}  ({DTE} DTE)")
+    print(f"{'═'*65}\n")
+
+    plays, no_signal, skipped = build_play_list()
+
+    if not plays:
+        print("\nNo qualifying stocks found.")
+        sys.exit(1)
+
+    # ── save ──────────────────────────────────────────────────────────────────
+    output = {
+        "generated_at":    datetime.utcnow().isoformat(timespec="seconds") + "Z",
+        "next_entry":      NEXT_ENTRY,
+        "next_expiry":     NEXT_EXPIRY,
+        "dte":             DTE,
+        "premium_source":  "s3_last_period",
+        "n_plays":         len(plays),
+        "n_no_signal":     len(no_signal),
+        "n_skipped":       len(skipped),
+        "equal_weight":    round(1.0 / len(plays), 4) if plays else 0,
+        "plays":           plays,
+        "no_signal":       no_signal,
+    }
+
+    out_path = os.path.join(os.path.dirname(__file__), "current_play_list.json")
+    with open(out_path, "w") as f:
+        json.dump(output, f, indent=2)
+
+    # ── print table ───────────────────────────────────────────────────────────
+    print(f"\n  {'TICKER':<7} {'PREV_RET%':>9} {'S3_PRICE':>9} {'STRIKE':>8} "
+          f"{'PREM$':>7} {'PREM%':>7}  PERIOD_N")
+    print(f"  {'─'*7} {'─'*9} {'─'*9} {'─'*8} {'─'*7} {'─'*7}  {'─'*10}")
+    for p in plays:
+        print(f"  {p['ticker']:<7} {p['prev_return']:>+9.2f} "
+              f"{p['stock_price_n']:>9.2f} {p['strike']:>8.2f} "
+              f"{p['premium']:>7.2f} {p['premium_pct']:>7.3f}%"
+              f"  {p['period_n']}")
+
+    avg_prem = sum(p["premium_pct"] for p in plays) / len(plays)
+    print(f"\n  {len(plays)} stocks qualifying  |  avg premium {avg_prem:.3f}%  "
+          f"|  weight {100/len(plays):.1f}% each")
+    print(f"  {len(no_signal)} stocks: no signal (prev return <= 0%)")
+    if skipped:
+        print(f"  {len(skipped)} skipped (data issues): {', '.join(skipped)}")
+    print(f"\n  Saved → {out_path}\n")
+
+
+if __name__ == "__main__":
+    main()
