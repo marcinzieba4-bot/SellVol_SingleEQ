@@ -14,16 +14,18 @@ Price source:
 
   • Signal  : current period stock_price vs previous period stock_price
               (periods are ~4 weeks apart, so this IS the 4-week comparison)
-  • Expiry  : next period's stock_price (next period starts 3 business days
-              after current expiry — close enough as expiry proxy)
+  • Expiry  : next real period's stock_price (~1 business day after expiry —
+              good proxy for standard non-gap cycles, S3-consistent for splits).
+              When the next record is synthetic (gap follows), Yahoo Finance is
+              used instead to get the actual expiry-date close.
   • Last period expiry: fetch from Yahoo using the ratio detected from nearby
               S3 prices (handles split-adjusted vs raw discrepancy).
 
 Missing period rule:
   Gaps > 10 calendar days between consecutive period_ends and period_starts
-  are filled with one synthetic period. Synthetic periods carry forward the
-  last entry_premium and interpolate stock_price between the surrounding S3
-  records.
+  are filled with synthetic placeholder records. Synthetic periods carry
+  forward the last entry_premium and stock_price (forward-fill, no look-ahead).
+  No trades are taken during synthetic periods.
 """
 
 import os
@@ -153,16 +155,10 @@ def fill_gaps(records: list[dict]) -> list[dict]:
             synth_end = min(synth_start + timedelta(days=25),
                             start_i1 - timedelta(days=1))
 
-            # Interpolate stock price between surrounding real records
+            # Forward-fill stock price from the last real record.
+            # Interpolating toward price_after would use future data (look-ahead).
             price_before = rec["stock_price"]
-            price_after  = records[i + 1]["stock_price"]
-            t_total = (start_i1 - end_i).days
-            t_synth = (synth_start - end_i).days
-            if price_before and price_after and t_total > 0:
-                frac        = t_synth / t_total
-                synth_price = price_before + frac * (price_after - price_before)
-            else:
-                synth_price = price_before
+            synth_price  = price_before
 
             # Carry forward last known strike offset (% of stock)
             last_strike = rec.get("strike")
@@ -270,11 +266,15 @@ def run_strategy(ticker: str, mode: str = "sell_put") -> list[dict]:
         # Signal price: previous period's stock_price (~4 weeks ago)
         stock_4w_ago = periods[i - 1]["stock_price"] if i > 0 else None
 
-        # Expiry price: next period's stock_price (starts ~3 days after expiry)
-        if i + 1 < len(periods):
+        # Expiry price: next real period's stock_price (starts ~1 business day
+        # after current expiry — good proxy for non-gap periods).
+        # When the immediately next record is synthetic (gap follows current
+        # period), the forward-filled price would equal stock_entry and
+        # misrepresent the actual settlement.  Fetch from Yahoo instead.
+        if i + 1 < len(periods) and not periods[i + 1]["synthetic"]:
             stock_expiry = periods[i + 1]["stock_price"]
         else:
-            # Last period — fetch from Yahoo (post-split, scale=1.0 for recent)
+            # Last period OR gap period follows — use actual expiry close from Yahoo.
             stock_expiry = get_yahoo_close_on(ticker, to_date(rec["period_end"]),
                                               scale=yahoo_scale)
 
@@ -296,6 +296,11 @@ def run_strategy(ticker: str, mode: str = "sell_put") -> list[dict]:
             signal = have_signal_data          # always in — direction encoded in trade
         else:  # sell_put / buy_call: trade when last 4W positive
             signal = up
+
+        # Synthetic (gap-fill) periods use forward-filled prices — never trade
+        # on them to avoid any residual look-ahead from the surrounding gap context.
+        if rec["synthetic"]:
+            signal = False
 
         # Option type for this period (call vs put) — needed for intrinsic correction
         if mode in ("buy_call", "sell_call_always", "sell_call_negative", "call_momentum"):
