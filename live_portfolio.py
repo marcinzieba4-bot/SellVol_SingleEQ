@@ -222,6 +222,16 @@ def generate_signals(entry_year: int, entry_month: int,
     """
     For entry in month M, signal is based on month M-1 candle.
     Returns list of position dicts (sell_put or no_trade).
+
+    Look-ahead boundary
+    -------------------
+    Signal data  : full calendar month M-1  (ends last day of M-1)
+    Trade period : last Friday of M  →  last Friday of M+1
+    The signal window is fully closed before the trade window opens.
+    No data from the trade period is used to generate signals.
+
+    Note: strikes are placeholder M-1 closes here.
+    run_entry() overwrites them with live entry-day prices.
     """
     # signal month = month before entry
     if entry_month == 1:
@@ -320,6 +330,25 @@ def run_entry(year: int | None = None, month: int | None = None) -> Path:
 
     sell_puts = [p for p in positions if p["signal"] == "sell_put"]
     no_trades = [p for p in positions if p["signal"] == "no_trade"]
+
+    # ── update strikes to actual entry-day market prices ──────────────────────
+    # Signal direction (UP/DOWN) comes from M-1 candle — no look-ahead.
+    # Strike must be the live ATM price on entry day, not the M-1 close.
+    if sell_puts:
+        print(f"  Fetching live entry prices for {len(sell_puts)} sell_put tickers …")
+        entry_prices = fetch_current_prices([p["ticker"] for p in sell_puts])
+        dte = (expiry_dt - entry_dt).days
+        for p in sell_puts:
+            price = entry_prices.get(p["ticker"])
+            if price is None:
+                print(f"  WARNING: no live price for {p['ticker']}, keeping M-1 close as strike")
+                continue
+            p["strike"]      = round(price, 2)
+            p["entry_price"] = round(price, 2)
+            # recalculate premium at new ATM level (% unchanged for ATM, but record it)
+            T_months   = dte / 30.0
+            iv_pct     = p["iv_at_entry"]
+            p["premium_pct"] = round(atm_premium_pct(iv_pct, rfr, T_months) * 100, 3)
 
     data = {
         "entry_date":      entry_dt.isoformat(),
