@@ -376,6 +376,27 @@ def run_strategy(ticker: str, mode: str = "sell_put") -> list[dict]:
                       f"→ {atm_correction:+.2f}  premium {premium:.2f} → {premium + atm_correction:.2f}")
             premium = max(0.0, premium + atm_correction)
 
+        # ── Split correction on expiry price ──────────────────────────────────
+        # When consecutive S3 period files cross a stock split the next
+        # period's stock_price is on a different (post-split) scale while
+        # stock_entry and strike are still pre-split.  Detect: ratio
+        # stock_entry/stock_expiry ≈ known split AND strike ≈ stock_entry.
+        split_factor = 1
+        if stock_expiry and stock_entry and strike:
+            _ratio = stock_entry / stock_expiry
+            for _split_r in [20, 10, 5, 4, 3, 2]:
+                if abs(_ratio - _split_r) / _split_r < 0.15:
+                    # Confirm: strike is on the same scale as entry (within 15%)
+                    if abs(stock_entry - strike) / stock_entry < 0.15:
+                        raw_expiry = stock_expiry
+                        stock_expiry = round(stock_expiry * _split_r, 4)
+                        split_factor = _split_r
+                        print(f"  [{rec['period_start']}] {ticker} "
+                              f"SPLIT {_split_r}:1 detected "
+                              f"(entry={stock_entry:.2f} raw_expiry={raw_expiry:.2f}) "
+                              f"→ expiry adjusted to {stock_expiry:.2f}")
+                        break
+
         # ── P&L ───────────────────────────────────────────────────────────────
         if (signal and premium is not None
                 and stock_expiry is not None and strike is not None
@@ -452,6 +473,7 @@ def run_strategy(ticker: str, mode: str = "sell_put") -> list[dict]:
             "payoff":        round(payoff, 2),
             "pnl_dollar":    round(pnl_dollar, 2),
             "pnl_pct":       round(pnl_pct, 4),
+            "split_factor":  split_factor,
         })
 
     return results

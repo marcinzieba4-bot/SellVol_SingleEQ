@@ -9,13 +9,15 @@ Generates a per-trade CSV for the Buy Call strategy with:
   • underlying_ret_in_prev_period  — 4-week return that triggered the signal (%)
   • current_return_for_underlying  — underlying return during the option period (%)
   • pnl_dollar       — option P&L in dollars per share
-  • pnl_pct          — P&L as % of stock_entry
+  • pnl_pct          — P&L as % of stock_entry (net return; max loss = −premium_pct)
+  • contribution_pct — pnl_pct × (1/30): weighted contribution to equal-30 portfolio
   • trade            — "BUY CALL" or "NO TRADE" / "NO DATA"
   • signal           — True/False
   • stock_entry      — stock price at entry
-  • stock_expiry     — stock price at expiry (settlement proxy)
+  • stock_expiry     — stock price at expiry (settlement proxy, split-corrected)
   • strike           — option strike used
-  • payoff           — intrinsic value at expiry
+  • payoff           — intrinsic value at expiry (split-corrected)
+  • split_factor     — detected split ratio applied to expiry price (1 = no split)
 
 Only rows where trade == "BUY CALL" are written (active trades only).
 
@@ -86,6 +88,8 @@ def main():
             curr_ret    = ((sx / se - 1) * 100) if (se and sx) else None
             prev_ret    = parse_signal_pct(r.get("signal_detail", ""))
 
+            weighted_ret = round(r["pnl_pct"] / 30, 6) if r["pnl_pct"] is not None else None
+
             rows.append({
                 "period_start":                  r["period_start"],
                 "period_end":                    r["period_end"],
@@ -96,12 +100,14 @@ def main():
                 "current_return_for_underlying": round(curr_ret, 2)    if curr_ret    is not None else None,
                 "pnl_dollar":                    r["pnl_dollar"],
                 "pnl_pct":                       r["pnl_pct"],
+                "contribution_pct":              weighted_ret,
                 "stock_entry":                   se,
                 "stock_expiry":                  sx,
                 "strike":                        r["strike"],
                 "payoff":                        r["payoff"],
                 "atm_correction":                r["atm_correction"],
                 "carried":                       r["carried"],
+                "split_factor":                  r.get("split_factor", 1),
             })
 
         print(f"  [{i:>2}/{len(needed_tickers)}] {ticker:<8} "
@@ -121,8 +127,9 @@ def main():
         "underlying_ret_in_prev_period",
         "current_return_for_underlying",
         "pnl_dollar", "pnl_pct",
+        "contribution_pct",          # pnl_pct × (1/30) — weighted contribution at 1/30 portfolio weight
         "stock_entry", "stock_expiry", "strike", "payoff",
-        "atm_correction", "carried",
+        "atm_correction", "carried", "split_factor",
     ]
     with open(OUT_PATH, "w", newline="") as f:
         w = csv.DictWriter(f, fieldnames=fieldnames)
