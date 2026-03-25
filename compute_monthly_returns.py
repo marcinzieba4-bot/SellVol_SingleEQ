@@ -67,18 +67,22 @@ print(f"Loaded {sum(len(v) for v in rows_by_period.values())} trade rows "
 period_summary = []
 
 for (ps, pe), trades in sorted(rows_by_period.items()):
-    pnl_pcts  = [float(t["pnl_pct"])              for t in trades]
+    # contribution_pct = pnl_pct / 30  (fixed 30-slot portfolio)
+    # sum across active tickers gives the equal-weight portfolio return
+    # (inactive slots contribute 0, correctly)
+    portfolio_ret = sum(float(t["contribution_pct"]) for t in trades)
+
+    # Premium fraction of total capital: sum(premium_pct) / 30
+    # (same 30-slot denominator keeps inactive slots at 0 cost)
     prem_pcts = [float(t["premium_pct"]) if t["premium_pct"].strip() else 0.0
                  for t in trades]
-
-    avg_pnl  = sum(pnl_pcts)  / len(pnl_pcts)
-    avg_prem = sum(prem_pcts) / len(prem_pcts)
+    avg_prem_30 = sum(prem_pcts) / 30.0   # always divide by 30
 
     mm            = mmkt_period(ps)
-    capital_used  = LEVERAGE * avg_prem / 100.0
+    capital_used  = LEVERAGE * avg_prem_30 / 100.0
     idle_fraction = max(0.0, 1.0 - capital_used)
     mm_contrib    = idle_fraction * mm
-    period_pnl_C  = LEVERAGE * avg_pnl + mm_contrib
+    period_pnl_C  = LEVERAGE * portfolio_ret + mm_contrib
 
     maj_month = majority_month(ps, pe)
 
@@ -87,9 +91,9 @@ for (ps, pe), trades in sorted(rows_by_period.items()):
         "period_end":     pe,
         "majority_month": maj_month,
         "n_tickers":      len(trades),
-        "avg_pnl":        avg_pnl,
-        "avg_prem":       avg_prem,
-        "option_pnl":     LEVERAGE * avg_pnl,
+        "portfolio_ret":  portfolio_ret,
+        "avg_prem_30":    avg_prem_30,
+        "option_pnl":     LEVERAGE * portfolio_ret,
         "mm_contrib":     mm_contrib,
         "period_pnl_C":   period_pnl_C,
     })
