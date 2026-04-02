@@ -31,7 +31,7 @@ logger = logging.getLogger()
 logger.setLevel(logging.INFO)
 
 OPTIONS_BUCKET = os.environ.get("OPTIONS_BUCKET", "s3bucketmz")
-OPTIONS_PREFIX = os.environ.get("OPTIONS_PREFIX", "optionsData/")
+OPTIONS_PREFIX = os.environ.get("OPTIONS_PREFIX", "optionsDataCall/")
 
 s3 = boto3.client("s3")
 

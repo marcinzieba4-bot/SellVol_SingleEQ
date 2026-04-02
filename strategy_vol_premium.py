@@ -55,7 +55,7 @@ MIN_PREMIUM_FLOOR = 0.05
 MIN_PREMIUM_PCT = 0.010   # 1.0% of stock price
 
 S3_BUCKET = os.environ.get("OPTIONS_BUCKET", "s3bucketmz")
-S3_PREFIX = os.environ.get("OPTIONS_PREFIX", "optionsData/")
+S3_PREFIX = os.environ.get("OPTIONS_PREFIX", "optionsDataCall/")
 AWS_REGION = os.environ.get("OPTIONS_REGION", os.environ.get("AWS_DEFAULT_REGION", "eu-north-1"))
 
 s3 = boto3.client("s3", region_name=AWS_REGION)  # uses env AWS_ACCESS_KEY_ID / AWS_SECRET_ACCESS_KEY
