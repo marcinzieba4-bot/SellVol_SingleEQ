@@ -226,7 +226,7 @@ def _cover(st):
     elems.append(Spacer(1, 16))
     elems.append(Paragraph(f"Prepared {date.today():%B %d, %Y}", st["CoverMeta"]))
     elems.append(Spacer(1, 6))
-    elems.append(Paragraph("Backtest Period: September 2020 – February 2026  (~5.5 years)",
+    elems.append(Paragraph("Backtest Period: September 2020 – June 2026  (~5.7 years)",
                             st["CoverMeta"]))
     elems.append(Spacer(1, 6))
     elems.append(Paragraph("Dynamic Universe — Top 30 Stocks  |  S&amp;P 500",
@@ -436,77 +436,9 @@ def _heatmap_section(st):
     return elems
 
 
-def _monthly_table_section(st):
-    elems = [PageBreak()]
-    elems += _section("6. Monthly Returns — Detail Table (Unlevered)", st)
-    elems.append(Paragraph(
-        "Full numeric breakdown of unlevered returns by month and year — "
-        "1x notional in the options book, idle capital earning plain "
-        "money-market, no leverage. Colour coding matches the heatmap: "
-        "green = positive, red = negative, yellow ≈ zero.", st["Body"]))
-    elems.append(Spacer(1, 6))
-
-    df = pd.read_csv(os.path.join(RES, "signal_monthly_B.csv"))
-    months   = ["Jan","Feb","Mar","Apr","May","Jun",
-                "Jul","Aug","Sep","Oct","Nov","Dec","Annual"]
-    for m in months:
-        if m not in df.columns:
-            df[m] = None
-
-    header   = ["Year"] + months
-    col_year = CONTENT_W * 0.065
-    col_mon  = (CONTENT_W - col_year) / len(months)
-    col_widths = [col_year] + [col_mon] * len(months)
-
-    data         = [header]
-    cell_styles  = []
-
-    for ri, row in df.iterrows():
-        r_data = [str(int(row["Year"]))]
-        for ci, m in enumerate(months):
-            val = row.get(m)
-            try:
-                fval = float(val)
-                r_data.append(f"{fval:+.1f}")
-                tr, tc = ri + 1, ci + 1
-                if m == "Annual":
-                    bg = (colors.HexColor("#A9D18E") if fval > 0.1
-                          else colors.HexColor("#FF9999") if fval < -0.1
-                          else ZERO_CELL)
-                else:
-                    bg = (GREEN_CELL if fval > 0.1
-                          else RED_CELL if fval < -0.1
-                          else ZERO_CELL)
-                cell_styles.append(("BACKGROUND", (tc, tr), (tc, tr), bg))
-            except (TypeError, ValueError):
-                r_data.append("")
-        data.append(r_data)
-
-    ts = TableStyle([
-        ("BACKGROUND",    (0, 0), (-1, 0),  HEADER_BG),
-        ("TEXTCOLOR",     (0, 0), (-1, 0),  WHITE),
-        ("FONTNAME",      (0, 0), (-1, 0),  "Helvetica-Bold"),
-        ("FONTSIZE",      (0, 0), (-1, 0),  7),
-        ("ALIGN",         (0, 0), (-1, -1), "CENTER"),
-        ("FONTNAME",      (0, 1), (-1, -1), "Helvetica"),
-        ("FONTSIZE",      (0, 1), (-1, -1), 7),
-        ("FONTNAME",      (-1, 0), (-1, -1), "Helvetica-Bold"),
-        ("ALIGN",         (0, 1), (0, -1),  "LEFT"),
-        ("GRID",          (0, 0), (-1, -1), 0.3, MED_GRAY),
-        ("LINEAFTER",     (-2, 0), (-2, -1), 1.0, MID_BLUE),
-        ("BOTTOMPADDING", (0, 0), (-1, -1), 3),
-        ("TOPPADDING",    (0, 0), (-1, -1), 3),
-        ("LEFTPADDING",   (0, 0), (-1, -1), 2),
-        ("RIGHTPADDING",  (0, 0), (-1, -1), 2),
-    ] + cell_styles)
-
-    elems.append(Table(data, colWidths=col_widths, style=ts, repeatRows=1))
-    return elems
-
-
 def _recent_history_section(st):
     elems = [PageBreak()]
-    elems += _section("7. Recent History — Last 6 Periods (Unlevered)", st)
+    elems += _section("6. Recent History — Last 6 Periods (Unlevered)", st)
     elems.append(Paragraph(
         "Detail view of the most recent monthly cycles under the unlevered "
         "(1x) variant, showing how many tickers actually signaled BUY CALL "
@@ -575,16 +507,16 @@ def _recent_history_section(st):
 
 def _takeaways(st):
     elems = [PageBreak()]
-    elems += _section("8. Investment Case", st)
+    elems += _section("7. Investment Case", st)
 
     bullets = [
-        "<b>Unlevered: +47.4% total return over 5.5 years — CAGR +7.1% p.a.</b>, "
+        "<b>Unlevered: +52.7% total return over ~5.7 years — CAGR +7.4% p.a.</b>, "
         "with a peak drawdown of 3.3%. This is the realistic base case: only "
         "tickers that actually signal BUY CALL are traded (capped at 30 active "
         "slots, prioritized by option premium %), idle capital earns plain "
         "money-market, no leverage on either leg.",
 
-        "<b>4x Leveraged: +131.9% total return — CAGR +15.9% p.a.</b>, with a peak "
+        "<b>4x Leveraged: +150.1% total return — CAGR +16.7% p.a.</b>, with a peak "
         "drawdown of 14.0%. Leverage scales both the return and the drawdown "
         "versus the unlevered case — it amplifies the existing edge, it does "
         "not create a new one.",
@@ -600,22 +532,33 @@ def _takeaways(st):
         "uses period-appropriate short-term rates (0.08% in 2020–21 ZIRP, rising to "
         "~5% in 2023–24).",
 
-        "<b>Sharpe / Sortino — Unlevered 1.68 / 2.13, 4x Leveraged 1.18 / 1.43.</b> "
+        "<b>Sharpe / Sortino — Unlevered 1.76 / 2.27, 4x Leveraged 1.27 / 1.57.</b> "
         "The unlevered variant has the better risk-adjusted profile on both measures; "
         "leverage increases the absolute return but at a worse Sharpe/Sortino ratio, "
         "as expected when scaling a fixed signal with a fixed-cost cash leg.",
 
-        "<b>Win rate: 70% unlevered (52/74 periods), 65% with 4x leverage (48/74)</b> "
+        "<b>Win rate: 71% unlevered (55/77 periods), 66% with 4x leverage (51/77)</b> "
         "— the same underlying trade decisions; leverage changes the magnitude of "
         "wins and losses, not which periods are profitable.",
 
+        "<b>The three most recent periods (Mar–Jun 2026) use simulated option "
+        "premiums.</b> Live option-chain data for this window was not available, "
+        "so premiums were approximated from the VIX level at each period's start "
+        "(ATM call ≈ 0.4 × stock price × VIX/100 × √(28/365), the standard "
+        "at-the-money Black-Scholes approximation), applied uniformly across all "
+        "names that period. This is a market-wide volatility proxy, not a "
+        "per-ticker priced option, and should be treated as indicative rather "
+        "than a precise historical fill.",
+
         "<b>By calendar year (unlevered / 4x leveraged): 2022 −0.7% / −7.9%, "
-        "2023 +16.0% / +46.4%, 2024 +17.4% / +53.1%.</b> 2023–24 broad market "
-        "momentum drove the bulk of cumulative return; 2022's rate-shock year "
-        "was the one calendar-year loss in this backtest, amplified under 4x "
-        "leverage. (Each ~4-week period is attributed to the calendar month "
-        "containing its midpoint — see Section 6 for the full monthly "
-        "breakdown, which sums exactly to these yearly figures.)",
+        "2023 +16.0% / +46.4%, 2024 +17.4% / +53.1%, 2026 YTD +6.3% / +17.4% "
+        "(through early June).</b> 2023–24 broad market momentum drove the "
+        "bulk of cumulative return; 2022's rate-shock year was the one "
+        "calendar-year loss in this backtest, amplified under 4x leverage. "
+        "(Each ~4-week period is attributed to the calendar month containing "
+        "its midpoint — see Section 5 for the full monthly breakdown, which "
+        "sums exactly to these yearly figures. The three most recent periods, "
+        "March–June 2026, use simulated option premiums — see note below.)",
 
         "<b>Fully systematic and low-maintenance.</b> Signals are generated once "
         "per monthly cycle with no intraday monitoring required. The approach is "
@@ -656,7 +599,6 @@ def build():
     story += _risk_stats_section(stats_b, stats_c, st)
     story += _equity_section(st)
     story += _heatmap_section(st)
-    story += _monthly_table_section(st)
     story += _recent_history_section(st)
     story += _takeaways(st)
 
