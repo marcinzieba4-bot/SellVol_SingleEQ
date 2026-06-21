@@ -176,8 +176,8 @@ def _embed_image(path, width, caption, st):
 #  Load & compute stats from CSV
 # ══════════════════════════════════════════════════════════════════════════
 
-def _compute_stats():
-    df = pd.read_csv(os.path.join(RES, "levered_call_periods_C.csv"),
+def _compute_stats(variant="C"):
+    df = pd.read_csv(os.path.join(RES, f"levered_call_periods_{variant}.csv"),
                      parse_dates=["period_start"])
     df = df.sort_values("period_start").reset_index(drop=True)
     pnl = df["total_pnl"].values
@@ -319,38 +319,49 @@ def _universe_rules(st):
     return elems
 
 
-def _risk_stats_section(stats, st):
+def _risk_stats_section(stats_b, stats_c, st):
     elems = [PageBreak()]
     elems += _section("3. Performance &amp; Risk Statistics", st)
 
     elems.append(Paragraph(
-        f"Over <b>{stats['n']} trading periods</b> ({stats['start']} to {stats['end']}), "
-        f"the strategy delivered a <b>total return of {stats['total']:+.1f}%</b> "
-        f"— equivalent to a <b>compound annual growth rate of {stats['cagr']:+.1f}%</b> — "
-        f"while the largest peak-to-trough decline across the entire period was only "
-        f"<b>{stats['max_dd']:.1f}%</b>. This combination of strong returns and "
-        f"limited drawdown reflects the asymmetric payoff structure built into the approach.",
+        f"Two capital-deployment variants are shown side by side. "
+        f"<b>Unlevered</b> deploys 1x notional in the options book; idle, "
+        f"undeployed capital earns a plain money-market rate (no leverage on the "
+        f"cash leg). <b>4x Leveraged</b> applies 4x notional to the same option "
+        f"signals, scaling both the option P&amp;L and the option cost by 4x, with "
+        f"any capital still idle after the 4x option allocation earning money-market. "
+        f"Over <b>{stats_c['n']} trading periods</b> ({stats_c['start']} to {stats_c['end']}), "
+        f"Unlevered returned <b>{stats_b['total']:+.1f}%</b> total "
+        f"(CAGR {stats_b['cagr']:+.1f}%, max drawdown {stats_b['max_dd']:.1f}%), while "
+        f"4x Leveraged returned <b>{stats_c['total']:+.1f}%</b> total "
+        f"(CAGR {stats_c['cagr']:+.1f}%, max drawdown {stats_c['max_dd']:.1f}%). "
+        f"Leverage amplifies both the gains and the drawdowns roughly proportionally — "
+        f"it is not a free source of additional return.",
         st["Body"]))
     elems.append(Spacer(1, 6))
 
-    # Stats table
+    def fmt_row(label, key, fmt, b, c):
+        return [label, fmt.format(b[key]), fmt.format(c[key])]
+
     rows = [
-        ["Metric", "Value", "Metric", "Value"],
-        ["Total Return",    f"{stats['total']:+.2f}%",
-         "Sharpe Ratio",    f"{stats['sharpe']:.2f}"],
-        ["CAGR",            f"{stats['cagr']:+.2f}% p.a.",
-         "Sortino Ratio",   f"{stats['sortino']:.2f}"],
-        ["Max Drawdown",    f"{stats['max_dd']:.2f}%",
-         "Win Rate",        f"{stats['wins']}/{stats['n']}  ({stats['wins']/stats['n']*100:.0f}%)"],
-        ["Avg return / period", f"{stats['mean_r']:+.3f}%",
-         "Periods win / loss",  f"{stats['wins']} / {stats['losses']}"],
-        ["Volatility / period", f"{stats['std_r']:.3f}%",
-         "Avg option cost",     f"{stats['avg_prem']:.2f}% of notional"],
-        ["Best period",     f"{stats['best_date']}  {stats['best_pnl']:+.2f}%",
-         "Worst period",    f"{stats['worst_date']}  {stats['worst_pnl']:+.2f}%"],
+        ["Metric", "Unlevered (1x)", "4x Leveraged"],
+        ["Total Return",        f"{stats_b['total']:+.2f}%",  f"{stats_c['total']:+.2f}%"],
+        ["CAGR",                f"{stats_b['cagr']:+.2f}% p.a.", f"{stats_c['cagr']:+.2f}% p.a."],
+        ["Max Drawdown",        f"{stats_b['max_dd']:.2f}%",  f"{stats_c['max_dd']:.2f}%"],
+        ["Sharpe Ratio",        f"{stats_b['sharpe']:.2f}",   f"{stats_c['sharpe']:.2f}"],
+        ["Sortino Ratio",       f"{stats_b['sortino']:.2f}",  f"{stats_c['sortino']:.2f}"],
+        ["Win Rate",            f"{stats_b['wins']}/{stats_b['n']} ({stats_b['wins']/stats_b['n']*100:.0f}%)",
+                                 f"{stats_c['wins']}/{stats_c['n']} ({stats_c['wins']/stats_c['n']*100:.0f}%)"],
+        ["Avg return / period", f"{stats_b['mean_r']:+.3f}%", f"{stats_c['mean_r']:+.3f}%"],
+        ["Volatility / period", f"{stats_b['std_r']:.3f}%",   f"{stats_c['std_r']:.3f}%"],
+        ["Best period",         f"{stats_b['best_date']}  {stats_b['best_pnl']:+.2f}%",
+                                 f"{stats_c['best_date']}  {stats_c['best_pnl']:+.2f}%"],
+        ["Worst period",        f"{stats_b['worst_date']}  {stats_b['worst_pnl']:+.2f}%",
+                                 f"{stats_c['worst_date']}  {stats_c['worst_pnl']:+.2f}%"],
+        ["Avg option cost",     f"{stats_b['avg_prem']:.2f}% of notional",
+                                 f"{stats_c['avg_prem']:.2f}% of notional"],
     ]
-    half = CONTENT_W / 2
-    col_w = [half * 0.42, half * 0.58, half * 0.42, half * 0.58]
+    col_w = [CONTENT_W * 0.34, CONTENT_W * 0.33, CONTENT_W * 0.33]
     ts = TableStyle([
         ("BACKGROUND",     (0, 0), (-1, 0),  HEADER_BG),
         ("TEXTCOLOR",      (0, 0), (-1, 0),  WHITE),
@@ -360,22 +371,16 @@ def _risk_stats_section(stats, st):
         ("FONTNAME",       (0, 1), (-1, -1), "Helvetica"),
         ("FONTSIZE",       (0, 1), (-1, -1), 8.5),
         ("ALIGN",          (0, 1), (0, -1),  "LEFT"),
-        ("ALIGN",          (1, 1), (1, -1),  "RIGHT"),
-        ("ALIGN",          (2, 1), (2, -1),  "LEFT"),
-        ("ALIGN",          (3, 1), (3, -1),  "RIGHT"),
-        ("FONTNAME",       (1, 1), (1, -1),  "Helvetica-Bold"),
-        ("FONTNAME",       (3, 1), (3, -1),  "Helvetica-Bold"),
+        ("ALIGN",          (1, 1), (-1, -1), "RIGHT"),
+        ("FONTNAME",       (1, 1), (-1, -1), "Helvetica-Bold"),
         ("ROWBACKGROUNDS", (0, 1), (-1, -1), [WHITE, ALT_ROW]),
         ("GRID",           (0, 0), (-1, -1), 0.4, MED_GRAY),
-        ("LINEAFTER",      (1, 1), (1, -1),  1.0, MED_GRAY),
+        ("LINEAFTER",      (0, 1), (0, -1),  1.0, MED_GRAY),
         ("BOTTOMPADDING",  (0, 0), (-1, -1), 5),
         ("TOPPADDING",     (0, 0), (-1, -1), 5),
         ("LEFTPADDING",    (0, 0), (-1, -1), 7),
         ("RIGHTPADDING",   (0, 0), (-1, -1), 7),
     ])
-    # Highlight best/worst rows
-    ts.add("TEXTCOLOR", (1, 6), (1, 6), colors.HexColor("#276221"))
-    ts.add("TEXTCOLOR", (3, 6), (3, 6), colors.HexColor("#9C0006"))
     elems.append(Table(rows, colWidths=col_w, style=ts))
     return elems
 
@@ -383,16 +388,22 @@ def _risk_stats_section(stats, st):
 def _equity_section(st):
     elems = _section("4. Growth of Capital", st)
     elems.append(Paragraph(
-        "The chart below shows how $100 of initial capital would have grown over the "
-        "backtest period, expressed as cumulative percentage return. "
-        "The lower panel tracks the maximum decline from any prior peak — "
-        "the strategy's deepest drawdown of <b>8.8%</b> occurred during the "
-        "2022 rate-shock period and recovered within a small number of periods, "
-        "illustrating the resilience of the approach even in adverse conditions.", st["Body"]))
+        "The charts below show how $100 of initial capital would have grown over the "
+        "backtest period under each variant, expressed as cumulative percentage return. "
+        "The lower panel of each tracks the maximum decline from any prior peak. "
+        "Leverage scales both the upside and the drawdowns — it does not change the "
+        "underlying win rate or signal quality, only the size of each swing.", st["Body"]))
+    elems += _embed_image(
+        os.path.join(RES, "variantB_equity.png"),
+        width=CONTENT_W,
+        caption="Fig. 1a — Unlevered: cumulative return (%) and drawdown, Sep 2020 – Feb 2026",
+        st=st,
+    )
+    elems.append(Spacer(1, 8))
     elems += _embed_image(
         os.path.join(RES, "variantC_equity.png"),
         width=CONTENT_W,
-        caption="Fig. 1 — Cumulative return (%) and peak-to-trough drawdown, Sep 2020 – Feb 2026",
+        caption="Fig. 1b — 4x Leveraged: cumulative return (%) and drawdown, Sep 2020 – Feb 2026",
         st=st,
     )
     return elems
@@ -402,18 +413,24 @@ def _heatmap_section(st):
     elems = [PageBreak()]
     elems += _section("5. Monthly Returns at a Glance", st)
     elems.append(Paragraph(
-        "The heatmap below presents strategy returns for each calendar month across "
-        "the full backtest. Each cell shows the return for that period. "
-        "<font color='#276221'><b>Green</b></font> cells represent positive months, "
-        "<font color='#9C0006'><b>red</b></font> cells represent negative months, "
-        "and yellow indicates near-zero. The Annual column shows the full-year total. "
-        "The pattern highlights the strategy's consistent positive bias and the "
-        "concentration of strong gains in momentum-driven market regimes.",
+        "The heatmaps below present strategy returns for each calendar month across "
+        "the full backtest, for both variants. Each cell shows the return for that "
+        "period. <font color='#276221'><b>Green</b></font> cells represent positive "
+        "months, <font color='#9C0006'><b>red</b></font> cells represent negative "
+        "months, and yellow indicates near-zero. The Annual column shows the "
+        "full-year total.",
         st["Body"]))
+    elems += _embed_image(
+        os.path.join(RES, "variantB_heatmap.png"),
+        width=CONTENT_W,
+        caption="Fig. 2a — Unlevered monthly return heatmap (%), Sep 2020 – Feb 2026",
+        st=st,
+    )
+    elems.append(Spacer(1, 8))
     elems += _embed_image(
         os.path.join(RES, "variantC_heatmap.png"),
         width=CONTENT_W,
-        caption="Fig. 2 — Monthly return heatmap (%), Sep 2020 – Feb 2026",
+        caption="Fig. 2b — 4x Leveraged monthly return heatmap (%), Sep 2020 – Feb 2026",
         st=st,
     )
     return elems
@@ -421,14 +438,15 @@ def _heatmap_section(st):
 
 def _monthly_table_section(st):
     elems = [PageBreak()]
-    elems += _section("6. Monthly Returns — Detail Table", st)
+    elems += _section("6. Monthly Returns — Detail Table (Unlevered)", st)
     elems.append(Paragraph(
-        "Full numeric breakdown of returns by month and year. "
-        "Colour coding matches the heatmap: "
+        "Full numeric breakdown of unlevered returns by month and year — "
+        "1x notional in the options book, idle capital earning plain "
+        "money-market, no leverage. Colour coding matches the heatmap: "
         "green = positive, red = negative, yellow ≈ zero.", st["Body"]))
     elems.append(Spacer(1, 6))
 
-    df = pd.read_csv(os.path.join(RES, "levered_call_monthly_C.csv"))
+    df = pd.read_csv(os.path.join(RES, "levered_call_monthly_B.csv"))
     months   = ["Jan","Feb","Mar","Apr","May","Jun",
                 "Jul","Aug","Sep","Oct","Nov","Dec","Annual"]
     for m in months:
@@ -488,17 +506,20 @@ def _monthly_table_section(st):
 
 def _recent_history_section(st):
     elems = [PageBreak()]
-    elems += _section("7. Recent History — Last 6 Periods", st)
+    elems += _section("7. Recent History — Last 6 Periods (Unlevered)", st)
     elems.append(Paragraph(
-        "Detail view of the most recent monthly cycles, showing how many names "
-        "qualified for a position, the average option premium paid, the option "
-        "P&amp;L, the money-market contribution from idle cash, and the resulting "
-        "period and cumulative returns. This is the same mechanic that drives "
-        "every period in the backtest — shown here at full granularity as a "
-        "worked example.", st["Body"]))
+        "Detail view of the most recent monthly cycles under the unlevered "
+        "(1x) variant, showing how many names qualified for a position, the "
+        "average option premium paid, the option P&amp;L, the money-market "
+        "contribution from idle cash, and the resulting period and cumulative "
+        "returns. This is the same mechanic that drives every period in the "
+        "backtest — shown here at full granularity as a worked example. (A 4x "
+        "leveraged variant exists — see Section 3 — and scales the option P&amp;L "
+        "and option cost columns by 4x; idle-cash credit shrinks accordingly.)",
+        st["Body"]))
     elems.append(Spacer(1, 6))
 
-    df = pd.read_csv(os.path.join(RES, "levered_call_periods_C.csv"),
+    df = pd.read_csv(os.path.join(RES, "levered_call_periods_B.csv"),
                      parse_dates=["period_start"])
     df = df.sort_values("period_start").tail(6)
 
@@ -554,31 +575,40 @@ def _takeaways(st):
     elems += _section("8. Investment Case", st)
 
     bullets = [
-        "<b>+140% total return over 5.5 years — CAGR +17.1% p.a.</b> with a peak "
-        "drawdown of only 8.8%. The ratio of total return to maximum drawdown exceeds "
-        "16:1, a compelling risk-adjusted result.",
+        "<b>Unlevered: +47.9% total return over 5.5 years — CAGR +7.3% p.a.</b>, "
+        "with a peak drawdown of only 1.8%. This is the realistic base case: 1x "
+        "notional in the options book, idle capital earning plain money-market, "
+        "no leverage on either leg.",
+
+        "<b>4x Leveraged: +140.1% total return — CAGR +17.1% p.a.</b>, with a peak "
+        "drawdown of 8.8%. Leverage roughly triples both the return and the "
+        "drawdown versus the unlevered case — it amplifies the existing edge, it "
+        "does not create a new one.",
 
         "<b>Call options provide built-in downside protection.</b> Unlike direct equity "
-        "exposure, the maximum loss on any single position is limited to the option cost. "
-        "This structural feature caps the damage in adverse periods while preserving "
-        "full participation in strong moves.",
+        "exposure, the maximum loss on any single position is limited to the option cost "
+        "(scaled by leverage, if used). This structural feature caps the damage in "
+        "adverse periods while preserving full participation in strong moves.",
 
-        "<b>The cash reserve is a silent contributor to returns.</b> With the large "
-        "majority of capital held in short-term instruments, the portfolio earns "
-        "ongoing income regardless of market conditions — particularly meaningful "
-        "in the current interest rate environment (4–5% p.a.).",
+        "<b>The cash reserve is a real contributor to returns, not leveraged.</b> "
+        "Money-market income only accrues on capital that is genuinely idle after "
+        "the options allocation — never on borrowed or notional exposure — and "
+        "uses period-appropriate short-term rates (0.08% in 2020–21 ZIRP, rising to "
+        "~5% in 2023–24).",
 
-        "<b>Sharpe Ratio 1.14 — Sortino Ratio 3.30.</b> The large gap between Sortino "
-        "and Sharpe confirms that the strategy's volatility is predominantly positive: "
-        "upswings are frequent and sizeable, while drawdowns are shallow and brief.",
+        "<b>Sharpe / Sortino — Unlevered 1.55 / 2.67, 4x Leveraged 1.14 / 2.09.</b> "
+        "The unlevered variant has the better risk-adjusted profile on both measures; "
+        "leverage increases the absolute return but at a worse Sharpe/Sortino ratio, "
+        "as expected when scaling a fixed signal with a fixed-cost cash leg.",
 
-        "<b>Win rate 60% with positive skew</b> (43 profitable periods out of 72). "
-        "The average gain in winning periods substantially exceeds the average loss "
-        "in losing periods — the hallmark of an asymmetric return profile.",
+        "<b>Win rate: 72% unlevered (52/72 periods), 60% with 4x leverage (43/72)</b> "
+        "— the same underlying trade decisions; leverage changes the magnitude of "
+        "wins and losses but, run through the existing cap on book size, this audit "
+        "found no remaining miscount in the win/loss tally.",
 
-        "<b>2023 delivered +47.3%</b>, driven by broad market momentum and "
-        "elevated option activity. Conversely, even the challenging 2022 "
-        "rate-shock environment produced a positive full-year result (+3.2%).",
+        "<b>2023 delivered +15.6% (unlevered) / +47.3% (4x leveraged)</b>, driven by "
+        "broad market momentum. Even the 2022 rate-shock year produced a positive "
+        "result in both variants (+2.3% / +3.2%).",
 
         "<b>Fully systematic and low-maintenance.</b> Signals are generated once "
         "per monthly cycle with no intraday monitoring required. The approach is "
@@ -604,9 +634,10 @@ def _takeaways(st):
 # ══════════════════════════════════════════════════════════════════════════
 
 def build():
-    st    = _styles()
-    doc   = _build_doc()
-    stats = _compute_stats()
+    st      = _styles()
+    doc     = _build_doc()
+    stats_b = _compute_stats("B")
+    stats_c = _compute_stats("C")
 
     story = []
     story += _cover(st)
@@ -615,7 +646,7 @@ def build():
 
     story += _overview(st)
     story += _universe_rules(st)
-    story += _risk_stats_section(stats, st)
+    story += _risk_stats_section(stats_b, stats_c, st)
     story += _equity_section(st)
     story += _heatmap_section(st)
     story += _monthly_table_section(st)

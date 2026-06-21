@@ -11,6 +11,13 @@ Generates a per-trade CSV for the Buy Call strategy with:
   • pnl_dollar       — option P&L in dollars per share
   • pnl_pct          — P&L as % of stock_entry (net return; max loss = −premium_pct)
   • contribution_pct — pnl_pct × (1/30): weighted contribution to equal-30 portfolio
+                       (0 if crowded out — see active_slot below)
+  • active_slot      — 1 if this trade occupies one of the (max 30) book slots
+                       that period, 0 if more than 30 tickers signaled that
+                       period and this one was crowded out (lower premium_pct
+                       = lower priority; capital stays in cash instead)
+  • n_signals_period — how many tickers signaled BUY CALL that period (can
+                       exceed 30 — the portfolio cannot hold more than 30)
   • trade            — "BUY CALL" or "NO TRADE" / "NO DATA"
   • signal           — True/False
   • stock_entry      — stock price at entry
@@ -28,8 +35,11 @@ Output:
 """
 
 import os, json, csv, io, contextlib, re
+from collections import defaultdict
 import sys
 sys.path.insert(0, os.path.dirname(__file__))
+
+MAX_SLOTS = 30
 
 from strategy_vol_premium import run_strategy
 
@@ -88,8 +98,6 @@ def main():
             curr_ret    = ((sx / se - 1) * 100) if (se and sx) else None
             prev_ret    = parse_signal_pct(r.get("signal_detail", ""))
 
-            weighted_ret = round(r["pnl_pct"] / 30, 6) if r["pnl_pct"] is not None else None
-
             rows.append({
                 "period_start":                  r["period_start"],
                 "period_end":                    r["period_end"],
@@ -100,7 +108,6 @@ def main():
                 "current_return_for_underlying": round(curr_ret, 2)    if curr_ret    is not None else None,
                 "pnl_dollar":                    r["pnl_dollar"],
                 "pnl_pct":                       r["pnl_pct"],
-                "contribution_pct":              weighted_ret,
                 "stock_entry":                   se,
                 "stock_expiry":                  sx,
                 "strike":                        r["strike"],
@@ -118,6 +125,27 @@ def main():
         for t, e in failed:
             print(f"  {t}: {e}")
 
+    # ── cap at 30 active slots per period, prioritized by premium_pct ───────
+    # A real book can hold at most 30 positions. When more than 30 tickers
+    # signal in a period, keep the 30 with the highest premium_pct (a proxy
+    # for richer/more-volatile options) and leave the rest uninvested
+    # (contribution_pct = 0) instead of silently over-allocating capital.
+    by_period = defaultdict(list)
+    for row in rows:
+        by_period[row["period_start"]].append(row)
+
+    for period, prows in by_period.items():
+        n_signals = len(prows)
+        prows.sort(key=lambda r: (r["premium_pct"] or 0.0), reverse=True)
+        active_ids = {id(r) for r in prows[:MAX_SLOTS]}
+        if n_signals > MAX_SLOTS:
+            print(f"  CAP  {period}: {n_signals} signals → kept top {MAX_SLOTS} by premium_pct")
+        for r in prows:
+            r["n_signals_period"] = n_signals
+            r["active_slot"] = 1 if id(r) in active_ids else 0
+            r["contribution_pct"] = (round(r["pnl_pct"] / MAX_SLOTS, 6)
+                                     if (r["pnl_pct"] is not None and r["active_slot"]) else 0.0)
+
     # Sort by period_start then ticker
     rows.sort(key=lambda r: (r["period_start"], r["ticker"]))
 
@@ -127,7 +155,7 @@ def main():
         "underlying_ret_in_prev_period",
         "current_return_for_underlying",
         "pnl_dollar", "pnl_pct",
-        "contribution_pct",          # pnl_pct × (1/30) — weighted contribution at 1/30 portfolio weight
+        "contribution_pct", "active_slot", "n_signals_period",
         "stock_entry", "stock_expiry", "strike", "payoff",
         "atm_correction", "carried", "split_factor",
     ]

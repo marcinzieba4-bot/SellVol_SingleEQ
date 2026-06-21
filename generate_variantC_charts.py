@@ -39,15 +39,15 @@ LIGHT_BG  = "#F8F9FA"
 #  Load data
 # ════════════════════════════════════════════════════════════════════════════
 
-def load_periods():
-    path = os.path.join(RES, "levered_call_periods_C.csv")
+def load_periods(variant="C"):
+    path = os.path.join(RES, f"levered_call_periods_{variant}.csv")
     df = pd.read_csv(path, parse_dates=["period_start"])
     df = df.sort_values("period_start").reset_index(drop=True)
     return df
 
 
-def load_monthly():
-    path = os.path.join(RES, "levered_call_monthly_C.csv")
+def load_monthly(variant="C"):
+    path = os.path.join(RES, f"levered_call_monthly_{variant}.csv")
     df = pd.read_csv(path)
     return df
 
@@ -56,8 +56,8 @@ def load_monthly():
 #  Chart 1 — Equity curve + Drawdown
 # ════════════════════════════════════════════════════════════════════════════
 
-def chart_equity():
-    df = load_periods()
+def chart_equity(variant="C"):
+    df = load_periods(variant)
 
     pnl = df["total_pnl"].values
     dates = df["period_start"].values
@@ -98,8 +98,11 @@ def chart_equity():
         f"Win rate: {stats['wins']}/{stats['n']} "
         f"({stats['wins']/stats['n']*100:.0f}%)"
     )
+    variant_label = ("Unlevered — Idle Cash Earns Money-Market" if variant == "B"
+                      else "4x Leveraged — Idle Cash Earns Money-Market" if variant == "C"
+                      else f"Variant {variant}")
     fig.suptitle(
-        "Momentum Call Strategy   |   Dynamic Top-30   |   S&P 500 Universe",
+        f"Momentum Call Strategy   |   Dynamic Top-30   |   S&P 500 Universe   |   {variant_label}",
         fontsize=10, fontweight="bold", color=DARK_BLUE, y=0.99,
     )
 
@@ -158,7 +161,7 @@ def chart_equity():
         ax.spines[["top", "right"]].set_visible(False)
 
     plt.tight_layout(rect=[0, 0, 1, 0.97], h_pad=0.6)
-    out = os.path.join(RES, "variantC_equity.png")
+    out = os.path.join(RES, f"variant{variant}_equity.png")
     fig.savefig(out, dpi=DPI, bbox_inches="tight", facecolor=LIGHT_BG)
     plt.close(fig)
     print(f"✓ Equity chart → {out}")
@@ -169,8 +172,8 @@ def chart_equity():
 #  Chart 2 — Monthly heatmap  (no text overlap)
 # ════════════════════════════════════════════════════════════════════════════
 
-def chart_heatmap():
-    df = load_monthly()
+def chart_heatmap(variant="C"):
+    df = load_monthly(variant)
     months  = ["Jan","Feb","Mar","Apr","May","Jun",
                "Jul","Aug","Sep","Oct","Nov","Dec"]
 
@@ -203,8 +206,11 @@ def chart_heatmap():
 
     fig, ax = plt.subplots(figsize=(fig_w, fig_h), facecolor=LIGHT_BG)
     ax.set_facecolor(LIGHT_BG)
+    variant_label = ("Unlevered" if variant == "B"
+                      else "4x Leveraged" if variant == "C"
+                      else f"Variant {variant}")
     fig.suptitle(
-        "Monthly Returns — Momentum Call Strategy",
+        f"Monthly Returns — Momentum Call Strategy ({variant_label})",
         fontsize=9.5, fontweight="bold", color=DARK_BLUE, y=0.995,
     )
 
@@ -311,7 +317,7 @@ def chart_heatmap():
     ax.axis("off")
 
     plt.tight_layout(rect=[0, 0, 1, 0.97])
-    out = os.path.join(RES, "variantC_heatmap.png")
+    out = os.path.join(RES, f"variant{variant}_heatmap.png")
     fig.savefig(out, dpi=DPI, bbox_inches="tight", facecolor=LIGHT_BG)
     plt.close(fig)
     print(f"✓ Heatmap chart → {out}")
@@ -319,5 +325,6 @@ def chart_heatmap():
 
 
 if __name__ == "__main__":
-    chart_equity()
-    chart_heatmap()
+    for v in ("B", "C"):
+        chart_equity(v)
+        chart_heatmap(v)
