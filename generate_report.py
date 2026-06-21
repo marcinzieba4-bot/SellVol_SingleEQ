@@ -177,7 +177,7 @@ def _embed_image(path, width, caption, st):
 # ══════════════════════════════════════════════════════════════════════════
 
 def _compute_stats(variant="C"):
-    df = pd.read_csv(os.path.join(RES, f"levered_call_periods_{variant}.csv"),
+    df = pd.read_csv(os.path.join(RES, f"signal_periods_{variant}.csv"),
                      parse_dates=["period_start"])
     df = df.sort_values("period_start").reset_index(drop=True)
     pnl = df["total_pnl"].values
@@ -446,7 +446,7 @@ def _monthly_table_section(st):
         "green = positive, red = negative, yellow ≈ zero.", st["Body"]))
     elems.append(Spacer(1, 6))
 
-    df = pd.read_csv(os.path.join(RES, "levered_call_monthly_B.csv"))
+    df = pd.read_csv(os.path.join(RES, "signal_monthly_B.csv"))
     months   = ["Jan","Feb","Mar","Apr","May","Jun",
                 "Jul","Aug","Sep","Oct","Nov","Dec","Annual"]
     for m in months:
@@ -509,27 +509,30 @@ def _recent_history_section(st):
     elems += _section("7. Recent History — Last 6 Periods (Unlevered)", st)
     elems.append(Paragraph(
         "Detail view of the most recent monthly cycles under the unlevered "
-        "(1x) variant, showing how many names qualified for a position, the "
-        "average option premium paid, the option P&amp;L, the money-market "
-        "contribution from idle cash, and the resulting period and cumulative "
-        "returns. This is the same mechanic that drives every period in the "
-        "backtest — shown here at full granularity as a worked example. (A 4x "
-        "leveraged variant exists — see Section 3 — and scales the option P&amp;L "
-        "and option cost columns by 4x; idle-cash credit shrinks accordingly.)",
+        "(1x) variant, showing how many tickers actually signaled BUY CALL "
+        "that period, how many were active (capped at 30, prioritized by "
+        "premium %), the average option premium paid, the option P&amp;L, "
+        "the money-market contribution from idle cash, and the resulting "
+        "period and cumulative returns. This is the same mechanic that "
+        "drives every period in the backtest — shown here at full "
+        "granularity as a worked example. (A 4x leveraged variant exists "
+        "— see Section 3 — and scales the option P&amp;L and option cost "
+        "columns by 4x; idle-cash credit shrinks accordingly.)",
         st["Body"]))
     elems.append(Spacer(1, 6))
 
-    df = pd.read_csv(os.path.join(RES, "levered_call_periods_B.csv"),
+    df = pd.read_csv(os.path.join(RES, "signal_periods_B.csv"),
                      parse_dates=["period_start"])
     df = df.sort_values("period_start").tail(6)
 
-    header = ["Period", "# Active", "Avg Premium", "Option P&L", "MM Contrib",
+    header = ["Period", "Signals", "Active", "Avg Premium", "Option P&L", "MM Contrib",
               "Total P&L", "Cumulative"]
     rows = [header]
     for _, r in df.iterrows():
         rows.append([
             str(r["period_start"])[:10],
-            f"{int(r['n_tickers'])}/30",
+            f"{int(r['n_signals'])}",
+            f"{int(r['n_active'])}/30",
             f"{r['avg_premium_pct']:.2f}%",
             f"{r['option_pnl']:+.2f}%",
             f"{r['mm_contrib']:+.2f}%",
@@ -537,8 +540,8 @@ def _recent_history_section(st):
             f"{r['cumulative_pct']:+.1f}%",
         ])
 
-    col_w = [CONTENT_W * 0.15, CONTENT_W * 0.12, CONTENT_W * 0.14, CONTENT_W * 0.15,
-              CONTENT_W * 0.14, CONTENT_W * 0.14, CONTENT_W * 0.16]
+    col_w = [CONTENT_W * 0.13, CONTENT_W * 0.10, CONTENT_W * 0.11, CONTENT_W * 0.13,
+              CONTENT_W * 0.14, CONTENT_W * 0.13, CONTENT_W * 0.13, CONTENT_W * 0.13]
     ts = TableStyle([
         ("BACKGROUND",     (0, 0), (-1, 0),  HEADER_BG),
         ("TEXTCOLOR",      (0, 0), (-1, 0),  WHITE),
@@ -558,8 +561,8 @@ def _recent_history_section(st):
     ])
     for i, (_, r) in enumerate(df.iterrows(), start=1):
         color = colors.HexColor("#276221") if r["total_pnl"] >= 0 else colors.HexColor("#9C0006")
-        ts.add("TEXTCOLOR", (5, i), (5, i), color)
-        ts.add("FONTNAME", (5, i), (5, i), "Helvetica-Bold")
+        ts.add("TEXTCOLOR", (6, i), (6, i), color)
+        ts.add("FONTNAME", (6, i), (6, i), "Helvetica-Bold")
     elems.append(Table(rows, colWidths=col_w, style=ts))
 
     elems.append(Spacer(1, 10))
@@ -575,15 +578,16 @@ def _takeaways(st):
     elems += _section("8. Investment Case", st)
 
     bullets = [
-        "<b>Unlevered: +47.9% total return over 5.5 years — CAGR +7.3% p.a.</b>, "
-        "with a peak drawdown of only 1.8%. This is the realistic base case: 1x "
-        "notional in the options book, idle capital earning plain money-market, "
-        "no leverage on either leg.",
+        "<b>Unlevered: +47.4% total return over 5.5 years — CAGR +7.1% p.a.</b>, "
+        "with a peak drawdown of 3.3%. This is the realistic base case: only "
+        "tickers that actually signal BUY CALL are traded (capped at 30 active "
+        "slots, prioritized by option premium %), idle capital earns plain "
+        "money-market, no leverage on either leg.",
 
-        "<b>4x Leveraged: +140.1% total return — CAGR +17.1% p.a.</b>, with a peak "
-        "drawdown of 8.8%. Leverage roughly triples both the return and the "
-        "drawdown versus the unlevered case — it amplifies the existing edge, it "
-        "does not create a new one.",
+        "<b>4x Leveraged: +131.9% total return — CAGR +15.9% p.a.</b>, with a peak "
+        "drawdown of 14.0%. Leverage scales both the return and the drawdown "
+        "versus the unlevered case — it amplifies the existing edge, it does "
+        "not create a new one.",
 
         "<b>Call options provide built-in downside protection.</b> Unlike direct equity "
         "exposure, the maximum loss on any single position is limited to the option cost "
@@ -596,19 +600,23 @@ def _takeaways(st):
         "uses period-appropriate short-term rates (0.08% in 2020–21 ZIRP, rising to "
         "~5% in 2023–24).",
 
-        "<b>Sharpe / Sortino — Unlevered 1.55 / 2.67, 4x Leveraged 1.14 / 2.09.</b> "
+        "<b>Sharpe / Sortino — Unlevered 1.68 / 2.13, 4x Leveraged 1.18 / 1.43.</b> "
         "The unlevered variant has the better risk-adjusted profile on both measures; "
         "leverage increases the absolute return but at a worse Sharpe/Sortino ratio, "
         "as expected when scaling a fixed signal with a fixed-cost cash leg.",
 
-        "<b>Win rate: 72% unlevered (52/72 periods), 60% with 4x leverage (43/72)</b> "
+        "<b>Win rate: 70% unlevered (52/74 periods), 65% with 4x leverage (48/74)</b> "
         "— the same underlying trade decisions; leverage changes the magnitude of "
-        "wins and losses but, run through the existing cap on book size, this audit "
-        "found no remaining miscount in the win/loss tally.",
+        "wins and losses, not which periods are profitable.",
 
-        "<b>2023 delivered +15.6% (unlevered) / +47.3% (4x leveraged)</b>, driven by "
-        "broad market momentum. Even the 2022 rate-shock year produced a positive "
-        "result in both variants (+2.3% / +3.2%).",
+        "<b>By calendar year (unlevered / 4x leveraged): 2022 +3.0% / +6.4%, "
+        "2023 +16.6% / +47.8%, 2024 +14.4% / +41.1%.</b> 2023–24 broad market "
+        "momentum drove the bulk of cumulative return; even the 2022 rate-shock "
+        "year was positive in both variants. (The Monthly Returns table in "
+        "Section 6 only counts periods that start in the first half of a "
+        "calendar month, to avoid attributing a 4-week cycle's P&amp;L to the "
+        "wrong month — its yearly totals are therefore lower than the full "
+        "figures quoted here.)",
 
         "<b>Fully systematic and low-maintenance.</b> Signals are generated once "
         "per monthly cycle with no intraday monitoring required. The approach is "

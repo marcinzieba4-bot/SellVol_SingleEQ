@@ -40,14 +40,14 @@ LIGHT_BG  = "#F8F9FA"
 # ════════════════════════════════════════════════════════════════════════════
 
 def load_periods(variant="C"):
-    path = os.path.join(RES, f"levered_call_periods_{variant}.csv")
+    path = os.path.join(RES, f"signal_periods_{variant}.csv")
     df = pd.read_csv(path, parse_dates=["period_start"])
     df = df.sort_values("period_start").reset_index(drop=True)
     return df
 
 
 def load_monthly(variant="C"):
-    path = os.path.join(RES, f"levered_call_monthly_{variant}.csv")
+    path = os.path.join(RES, f"signal_monthly_{variant}.csv")
     df = pd.read_csv(path)
     return df
 
@@ -102,7 +102,7 @@ def chart_equity(variant="C"):
                       else "4x Leveraged — Idle Cash Earns Money-Market" if variant == "C"
                       else f"Variant {variant}")
     fig.suptitle(
-        f"Momentum Call Strategy   |   Dynamic Top-30   |   S&P 500 Universe   |   {variant_label}",
+        f"Momentum Call Strategy   |   Signal-Filtered (Cap 30)   |   S&P 500 Universe   |   {variant_label}",
         fontsize=10, fontweight="bold", color=DARK_BLUE, y=0.99,
     )
 
