@@ -23,14 +23,14 @@ Strategy definition used here:
 Outputs (results/):
   signal_periods_B.csv     — unlevered, period-level
   signal_periods_C.csv     — 4x leveraged, period-level
-  signal_monthly_B.csv     — monthly table (unlevered), first-half-of-month only
-  signal_monthly_C.csv     — monthly table (4x leveraged), first-half-of-month only
+  signal_monthly_B.csv     — monthly table (unlevered), attributed by period midpoint
+  signal_monthly_C.csv     — monthly table (4x leveraged), attributed by period midpoint
 """
 
 import os
 import csv
 from collections import defaultdict
-from datetime import datetime
+from datetime import datetime, timedelta
 
 import pandas as pd
 
@@ -125,20 +125,19 @@ def build_periods():
 
 def build_monthly(rows, label):
     """Monthly table using ONLY periods whose period_start falls in the
-    first half of the month (day <= 15). Periods starting in the second
-    half are excluded from the monthly breakdown (they straddle into the
-    next month and would otherwise double-count / misattribute pnl)."""
+    midpoint of the period (period_start + 14 days, i.e. the centre of a
+    ~4-week cycle). Every period contributes its full P&L to exactly one
+    month — no periods are dropped — and the assignment reflects which
+    month the bulk of the period actually occurred in, rather than an
+    arbitrary 'which month did it start in' rule."""
     months = ["Jan","Feb","Mar","Apr","May","Jun",
               "Jul","Aug","Sep","Oct","Nov","Dec"]
 
     by_year_month = defaultdict(float)
-    excluded = []
     for r in rows:
         d = datetime.strptime(r["period_start"], "%Y-%m-%d")
-        if d.day <= 15:
-            by_year_month[(d.year, d.month)] += r["total_pnl"]
-        else:
-            excluded.append(r["period_start"])
+        mid = d + timedelta(days=14)
+        by_year_month[(mid.year, mid.month)] += r["total_pnl"]
 
     years = sorted({y for y, m in by_year_month})
     table_rows = []
@@ -162,9 +161,9 @@ def build_monthly(rows, label):
         w = csv.DictWriter(f, fieldnames=["Year"] + months + ["Annual"])
         w.writeheader()
         w.writerows(table_rows)
-    print(f"✓ {out}  ({len(table_rows)} years; {len(excluded)} periods excluded "
-          f"as 2nd-half-of-month starts)")
-    return table_rows, excluded
+    print(f"✓ {out}  ({len(table_rows)} years; {len(rows)} periods, "
+          f"all attributed by midpoint month)")
+    return table_rows
 
 
 if __name__ == "__main__":

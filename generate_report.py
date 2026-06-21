@@ -609,14 +609,13 @@ def _takeaways(st):
         "— the same underlying trade decisions; leverage changes the magnitude of "
         "wins and losses, not which periods are profitable.",
 
-        "<b>By calendar year (unlevered / 4x leveraged): 2022 +3.0% / +6.4%, "
-        "2023 +16.6% / +47.8%, 2024 +14.4% / +41.1%.</b> 2023–24 broad market "
-        "momentum drove the bulk of cumulative return; even the 2022 rate-shock "
-        "year was positive in both variants. (The Monthly Returns table in "
-        "Section 6 only counts periods that start in the first half of a "
-        "calendar month, to avoid attributing a 4-week cycle's P&amp;L to the "
-        "wrong month — its yearly totals are therefore lower than the full "
-        "figures quoted here.)",
+        "<b>By calendar year (unlevered / 4x leveraged): 2022 −0.7% / −7.9%, "
+        "2023 +16.0% / +46.4%, 2024 +17.4% / +53.1%.</b> 2023–24 broad market "
+        "momentum drove the bulk of cumulative return; 2022's rate-shock year "
+        "was the one calendar-year loss in this backtest, amplified under 4x "
+        "leverage. (Each ~4-week period is attributed to the calendar month "
+        "containing its midpoint — see Section 6 for the full monthly "
+        "breakdown, which sums exactly to these yearly figures.)",
 
         "<b>Fully systematic and low-maintenance.</b> Signals are generated once "
         "per monthly cycle with no intraday monitoring required. The approach is "
