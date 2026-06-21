@@ -486,9 +486,72 @@ def _monthly_table_section(st):
     return elems
 
 
+def _recent_history_section(st):
+    elems = [PageBreak()]
+    elems += _section("7. Recent History — Last 6 Periods", st)
+    elems.append(Paragraph(
+        "Detail view of the most recent monthly cycles, showing how many names "
+        "qualified for a position, the average option premium paid, the option "
+        "P&amp;L, the money-market contribution from idle cash, and the resulting "
+        "period and cumulative returns. This is the same mechanic that drives "
+        "every period in the backtest — shown here at full granularity as a "
+        "worked example.", st["Body"]))
+    elems.append(Spacer(1, 6))
+
+    df = pd.read_csv(os.path.join(RES, "levered_call_periods_C.csv"),
+                     parse_dates=["period_start"])
+    df = df.sort_values("period_start").tail(6)
+
+    header = ["Period", "# Active", "Avg Premium", "Option P&L", "MM Contrib",
+              "Total P&L", "Cumulative"]
+    rows = [header]
+    for _, r in df.iterrows():
+        rows.append([
+            str(r["period_start"])[:10],
+            f"{int(r['n_tickers'])}/30",
+            f"{r['avg_premium_pct']:.2f}%",
+            f"{r['option_pnl']:+.2f}%",
+            f"{r['mm_contrib']:+.2f}%",
+            f"{r['total_pnl']:+.2f}%",
+            f"{r['cumulative_pct']:+.1f}%",
+        ])
+
+    col_w = [CONTENT_W * 0.15, CONTENT_W * 0.12, CONTENT_W * 0.14, CONTENT_W * 0.15,
+              CONTENT_W * 0.14, CONTENT_W * 0.14, CONTENT_W * 0.16]
+    ts = TableStyle([
+        ("BACKGROUND",     (0, 0), (-1, 0),  HEADER_BG),
+        ("TEXTCOLOR",      (0, 0), (-1, 0),  WHITE),
+        ("FONTNAME",       (0, 0), (-1, 0),  "Helvetica-Bold"),
+        ("FONTSIZE",       (0, 0), (-1, 0),  8.5),
+        ("ALIGN",          (0, 0), (-1, 0),  "CENTER"),
+        ("FONTNAME",       (0, 1), (-1, -1), "Helvetica"),
+        ("FONTSIZE",       (0, 1), (-1, -1), 8.5),
+        ("ALIGN",          (0, 1), (0, -1),  "LEFT"),
+        ("ALIGN",          (1, 1), (-1, -1), "RIGHT"),
+        ("ROWBACKGROUNDS", (0, 1), (-1, -1), [WHITE, ALT_ROW]),
+        ("GRID",           (0, 0), (-1, -1), 0.4, MED_GRAY),
+        ("BOTTOMPADDING",  (0, 0), (-1, -1), 5),
+        ("TOPPADDING",     (0, 0), (-1, -1), 5),
+        ("LEFTPADDING",    (0, 0), (-1, -1), 6),
+        ("RIGHTPADDING",   (0, 0), (-1, -1), 6),
+    ])
+    for i, (_, r) in enumerate(df.iterrows(), start=1):
+        color = colors.HexColor("#276221") if r["total_pnl"] >= 0 else colors.HexColor("#9C0006")
+        ts.add("TEXTCOLOR", (5, i), (5, i), color)
+        ts.add("FONTNAME", (5, i), (5, i), "Helvetica-Bold")
+    elems.append(Table(rows, colWidths=col_w, style=ts))
+
+    elems.append(Spacer(1, 10))
+    elems.append(Paragraph("<b>Most recent period — tickers held:</b>", st["SubTitle"]))
+    last = df.iloc[-1]
+    tickers_str = ", ".join(last["tickers"].split("|"))
+    elems.append(Paragraph(tickers_str, st["Body"]))
+    return elems
+
+
 def _takeaways(st):
     elems = [PageBreak()]
-    elems += _section("7. Investment Case", st)
+    elems += _section("8. Investment Case", st)
 
     bullets = [
         "<b>+140% total return over 5.5 years — CAGR +17.1% p.a.</b> with a peak "
@@ -556,6 +619,7 @@ def build():
     story += _equity_section(st)
     story += _heatmap_section(st)
     story += _monthly_table_section(st)
+    story += _recent_history_section(st)
     story += _takeaways(st)
 
     doc.build(story)
